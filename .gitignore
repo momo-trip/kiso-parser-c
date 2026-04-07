@@ -1,0 +1,7 @@
+usage_analyzer*/build
+usage_macro_ref_analyzer*/build
+include_finder*/build
+#!include_finder/build/analyzer
+llvm-project/
+llvm-custom/
+c_parser_api/__pycache__/
