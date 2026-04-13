@@ -8,3 +8,8 @@ c_parser_api/__pycache__/
 *.egg-info/
 __pycache__/
 *.pyc
+
+*golden_flow.txt
+*_trace.log
+*.so
+*.so.*
