@@ -270,8 +270,23 @@ public:
             }
         }
 
+        // if (auto *CE = dyn_cast<CallExpr>(S)) {
+        //     if (auto *Callee = CE->getDirectCallee()) {
+        //         std::string depUSR = getUSR(Callee);
+        //         if (!depUSR.empty() && depUSR != currentOwner) {
+        //             symbols[currentOwner].uses.insert(depUSR);
+        //             symbols[currentOwner].usage_locations[depUSR].insert(
+        //                 getLocationString(CE->getBeginLoc())
+        //             );
+        //         }
+        //     }
+        // }
+
         if (auto *CE = dyn_cast<CallExpr>(S)) {
             if (auto *Callee = CE->getDirectCallee()) {
+                if (FunctionDecl *Def = Callee->getDefinition()) {
+                    Callee = Def;
+                }
                 std::string depUSR = getUSR(Callee);
                 if (!depUSR.empty() && depUSR != currentOwner) {
                     symbols[currentOwner].uses.insert(depUSR);
@@ -989,6 +1004,67 @@ std::string escapeJsonString(const std::string &str) {
 
 
 void printAllSymbols() {
+    // // added 
+    for (auto &pair : globalSymbols) {
+        const std::string &key = pair.first;
+        SymbolInfo &info = pair.second;
+        
+        size_t declPos = key.find("#decl@");
+        if (declPos == std::string::npos) continue;
+        
+        std::string baseUSR = key.substr(0, declPos);
+        auto defIt = globalSymbols.find(baseUSR);
+        if (defIt != globalSymbols.end()) {
+            info.definitionRef = defIt->second.defLocation;
+        } else {
+            // Clang USR部分を抽出（@/以降を除去）
+            std::string clangUSR = baseUSR;
+            size_t pathAt = clangUSR.find("@/");
+            if (pathAt != std::string::npos) {
+                clangUSR = clangUSR.substr(0, pathAt);
+            }
+            
+            // 定義候補を収集
+            std::vector<const SymbolInfo*> candidates;
+            for (const auto &s : globalSymbols) {
+                if (s.first.find("#decl@") != std::string::npos) continue;
+                std::string sClangUSR = s.first;
+                size_t sPathAt = sClangUSR.find("@/");
+                if (sPathAt != std::string::npos) {
+                    sClangUSR = sClangUSR.substr(0, sPathAt);
+                }
+                if (sClangUSR == clangUSR) {
+                    candidates.push_back(&s.second);
+                }
+            }
+            
+            if (candidates.size() == 1) {
+                info.definitionRef = candidates[0]->defLocation;
+            }
+        }
+    }
+    
+    // for (auto &pair : globalSymbols) {
+    //     const std::string &key = pair.first;
+    //     SymbolInfo &info = pair.second;
+        
+    //     size_t declPos = key.find("#decl@");
+    //     if (declPos == std::string::npos) continue;
+        
+    //     std::string baseUSR = key.substr(0, declPos);
+    //     auto defIt = globalSymbols.find(baseUSR);
+
+    //     llvm::errs() << "LINK: key=" << key << "\n";
+    //     llvm::errs() << "LINK: baseUSR=" << baseUSR << "\n";
+    //     llvm::errs() << "LINK: found=" << (defIt != globalSymbols.end()) << "\n";
+        
+    //     if (defIt != globalSymbols.end()) {
+    //         info.definitionRef = defIt->second.defLocation;
+    //         llvm::errs() << "LINK: set definitionRef=" << info.definitionRef << "\n";
+    //     }
+    // }
+    // // ended
+    
     std::cout << "{\n";
     std::cout << "  \"symbols\": [\n";
     
@@ -1035,36 +1111,60 @@ void printAllSymbols() {
         
         bool firstDep = true;
         for (const auto &depUSR : info.uses) {
+
+            //const SymbolInfo &dep = globalSymbols[depUSR];
+            const SymbolInfo *dep = nullptr;
             if (globalSymbols.count(depUSR)) {
-                const SymbolInfo &dep = globalSymbols[depUSR];
-                
-                auto usageIt = info.usage_locations.find(depUSR);
-                if (usageIt != info.usage_locations.end() && !usageIt->second.empty()) {
-                    for (const auto &loc : usageIt->second) {
-                        if (!firstDep) {
-                            std::cout << ",\n";
-                        }
-                        firstDep = false;
-                        
-                        std::cout << "        {\n";
-                        std::cout << "          \"kind\": \"" << escapeJsonString(dep.kind) << "\",\n";
-                        std::cout << "          \"name\": \"" << escapeJsonString(dep.name) << "\",\n";
-                        std::cout << "          \"definition\": \"" << escapeJsonString(dep.defLocation) << "\",\n";
-                        std::cout << "          \"usage_location\": \"" << escapeJsonString(loc) << "\"\n";
-                        std::cout << "        }";
+                dep = &globalSymbols[depUSR];
+            } else {
+                std::string prefix = depUSR + "#decl@";
+                for (const auto &s : globalSymbols) {
+                    if (s.first.rfind(prefix, 0) == 0) {
+                        dep = &s.second;
+                        break;
                     }
-                } else {
+                }
+            }
+            if (!dep) continue;
+            
+            auto usageIt = info.usage_locations.find(depUSR);
+            if (usageIt != info.usage_locations.end() && !usageIt->second.empty()) {
+                for (const auto &loc : usageIt->second) {
                     if (!firstDep) {
                         std::cout << ",\n";
                     }
                     firstDep = false;
                     
                     std::cout << "        {\n";
-                    std::cout << "          \"kind\": \"" << escapeJsonString(dep.kind) << "\",\n";
-                    std::cout << "          \"name\": \"" << escapeJsonString(dep.name) << "\",\n";
-                    std::cout << "          \"definition\": \"" << escapeJsonString(dep.defLocation) << "\"\n";
+                    // std::cout << "          \"kind\": \"" << escapeJsonString(dep.kind) << "\",\n";
+                    // std::cout << "          \"name\": \"" << escapeJsonString(dep.name) << "\",\n";
+                    // std::cout << "          \"definition\": \"" << escapeJsonString(dep.defLocation) << "\",\n";
+                    // std::cout << "          \"usage_location\": \"" << escapeJsonString(loc) << "\"\n";
+                    std::cout << "          \"kind\": \"" << escapeJsonString(dep->kind) << "\",\n";
+                    std::cout << "          \"name\": \"" << escapeJsonString(dep->name) << "\",\n";
+                    //std::cout << "          \"definition\": \"" << escapeJsonString(dep->defLocation) << "\",\n";
+                    std::string defLocation = (!dep->definitionRef.empty()) ? dep->definitionRef : dep->defLocation;
+                    std::cout << "          \"definition\": \"" << escapeJsonString(defLocation) << "\",\n";
+                    std::cout << "          \"usage_location\": \"" << escapeJsonString(loc) << "\"\n";
                     std::cout << "        }";
                 }
+            } else {
+                if (!firstDep) {
+                    std::cout << ",\n";
+                }
+                firstDep = false;
+                
+                std::cout << "        {\n";
+                std::cout << "          \"kind\": \"" << escapeJsonString(dep->kind) << "\",\n";
+                std::cout << "          \"name\": \"" << escapeJsonString(dep->name) << "\",\n";
+                //std::cout << "          \"definition\": \"" << escapeJsonString(dep->defLocation) << "\"\n";
+                std::string defLocation = (!dep->definitionRef.empty()) ? dep->definitionRef : dep->defLocation;
+                std::cout << "          \"definition\": \"" << escapeJsonString(defLocation) << "\"\n";
+                // std::cout << "          \"kind\": \"" << escapeJsonString(dep.kind) << "\",\n";
+                // std::cout << "          \"name\": \"" << escapeJsonString(dep.name) << "\",\n";
+                // std::cout << "          \"definition\": \"" << escapeJsonString(dep.defLocation) << "\"\n";
+                std::cout << "        }";
+
             }
         }
         
