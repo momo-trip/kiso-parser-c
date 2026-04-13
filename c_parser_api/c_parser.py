@@ -142,6 +142,7 @@ from llm_api import (
 MACRO_HOME = "/root/SmartC2Rust/macro"
 TRANS_HOME = "/root/SmartC2Rust/trans"
 C_PARSER_HOME = "/root/kiso-parser-c"
+MACRO_PARSER_HOME = "/root/kiso-parser-macro"
 
 LLM_ON = False
 WEIGHT = None
@@ -8037,7 +8038,7 @@ def setup_macro_without_transforming(llm_on, macro_finder, target_dir, database_
 
     # Extract comments from all files once <-Is this functioning?
     target_tmp = tmp_backup_directory(target_dir)
-    p_f(replace_comments_with_spaces_file, target_dir, True, True)
+    # p_f(replace_comments_with_spaces_file, target_dir, True, True)
 
     #---------------------------------------------
     """
@@ -9480,7 +9481,7 @@ def generate_macro_metadata(target_dir, meta_dir, database_dir, independent_path
     """
     Specify the directory containing compile_commands.json, run the tool created in macro_analyzer.cpp in batch, extract macro metadata (JSON), and save it split by file.
     """
-    macro_analyzer_path = f"{MACRO_HOME}/macro_analyzer/build/macro_analyzer"
+    macro_analyzer_path = f"{MACRO_PARSER_HOME}/macro_analyzer/build/macro_analyzer"
 
     """
     compile_dir = find_compile_commands_json(target_dir)
