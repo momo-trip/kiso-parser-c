@@ -1017,14 +1017,12 @@ void printAllSymbols() {
         if (defIt != globalSymbols.end()) {
             info.definitionRef = defIt->second.defLocation;
         } else {
-            // Clang USR部分を抽出（@/以降を除去）
             std::string clangUSR = baseUSR;
             size_t pathAt = clangUSR.find("@/");
             if (pathAt != std::string::npos) {
                 clangUSR = clangUSR.substr(0, pathAt);
             }
             
-            // 定義候補を収集
             std::vector<const SymbolInfo*> candidates;
             for (const auto &s : globalSymbols) {
                 if (s.first.find("#decl@") != std::string::npos) continue;
@@ -1043,7 +1041,7 @@ void printAllSymbols() {
             }
         }
     }
-    
+
     // for (auto &pair : globalSymbols) {
     //     const std::string &key = pair.first;
     //     SymbolInfo &info = pair.second;

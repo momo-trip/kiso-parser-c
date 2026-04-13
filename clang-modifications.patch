@@ -1,0 +1,659 @@
+diff --git a/clang/include/clang/AST/Decl.h b/clang/include/clang/AST/Decl.h
+index 561a9d872..7a3650ecb 100644
+--- a/clang/include/clang/AST/Decl.h
++++ b/clang/include/clang/AST/Decl.h
+@@ -257,6 +257,7 @@ class NamedDecl : public Decl {
+ private:
+   NamedDecl *getUnderlyingDeclImpl() LLVM_READONLY;
+ 
++
+ protected:
+   NamedDecl(Kind DK, DeclContext *DC, SourceLocation L, DeclarationName N)
+       : Decl(DK, DC, L), Name(N) {}
+diff --git a/clang/include/clang/Basic/SourceLocation.h b/clang/include/clang/Basic/SourceLocation.h
+index 7a0f5ba8d..6f58b9571 100644
+--- a/clang/include/clang/Basic/SourceLocation.h
++++ b/clang/include/clang/Basic/SourceLocation.h
+@@ -99,6 +99,10 @@ public:
+ private:
+   UIntTy ID = 0;
+ 
++  // // added
++  // mutable SourceLocation* PreExpansionLoc = nullptr;
++  // // ended
++
+   enum : UIntTy { MacroIDBit = 1ULL << (8 * sizeof(UIntTy) - 1) };
+ 
+ public:
+@@ -112,6 +116,74 @@ public:
+   /// option).
+   bool isValid() const { return ID != 0; }
+   bool isInvalid() const { return ID == 0; }
++  
++  // added
++  // /// Get the location before expansion (if not a macro, return itself)
++  // SourceLocation getPreExpansionLoc() const {
++  //   if (PreExpansionLoc) {
++  //     return *PreExpansionLoc;
++  //   }
++  //   return *this;
++  // }
++  
++  // /// Set the pre-expansion location
++  // void setPreExpansionLoc(SourceLocation Loc) {
++  //   if (PreExpansionLoc == nullptr) {
++  //     PreExpansionLoc = new SourceLocation(Loc);
++  //   } else {
++  //     *PreExpansionLoc = Loc;
++  //   }
++  // }
++  
++  // /// Traverse the entire macro expansion chain to get the original location
++  // SourceLocation getOriginalLoc() const {
++  //   SourceLocation Current = *this;
++  //   int depth = 0;
++  //   const int MAX_DEPTH = 100; // Prevent infinite loop
++    
++  //   while (Current.PreExpansionLoc && depth < MAX_DEPTH) {
++  //     SourceLocation Next = Current.getPreExpansionLoc();
++  //     if (Next.getRawEncoding() == Current.getRawEncoding()) {
++  //       break; // Detect self-reference
++  //     }
++  //     Current = Next;
++  //     depth++;
++  //   }
++  //   return Current;
++  // }
++  
++  /// Free memory in destructor
++  // ~SourceLocation() {
++  //   if (PreExpansionLoc) {
++  //     delete PreExpansionLoc;
++  //     PreExpansionLoc = nullptr;
++  //   }
++  // }
++  
++  /// Copy constructor
++  // SourceLocation(const SourceLocation& Other) : ID(Other.ID) {
++  //   if (Other.PreExpansionLoc) {
++  //     PreExpansionLoc = new SourceLocation(*Other.PreExpansionLoc);
++  //   } else {
++  //     PreExpansionLoc = nullptr;
++  //   }
++  // }
++  
++  // /// Assignment operator
++  // SourceLocation& operator=(const SourceLocation& Other) {
++  //   if (this != &Other) {
++  //     ID = Other.ID;
++  //     if (PreExpansionLoc) {
++  //       delete PreExpansionLoc;
++  //       PreExpansionLoc = nullptr;
++  //     }
++  //     if (Other.PreExpansionLoc) {
++  //       PreExpansionLoc = new SourceLocation(*Other.PreExpansionLoc);
++  //     }
++  //   }
++  //   return *this;
++  // }
++  // ended
+ 
+ private:
+   /// Return the offset into the manager's global input view.
+diff --git a/clang/include/clang/Basic/SourceManager.h b/clang/include/clang/Basic/SourceManager.h
+index d3ccc7ef8..0f9e7f3d4 100644
+--- a/clang/include/clang/Basic/SourceManager.h
++++ b/clang/include/clang/Basic/SourceManager.h
+@@ -835,6 +835,21 @@ class SourceManager : public RefCountedBase<SourceManager> {
+   /// to do so (e.g., if on-demand module construction moves out-of-process),
+   /// we can add a cc1-level option to do so.
+   SmallVector<std::pair<std::string, FullSourceLoc>, 2> StoredModuleBuildStack;
++  
++
++  // added
++  /// Mapping from post-expansion locations to pre-expansion locations
++  mutable llvm::DenseMap<std::pair<FileID, unsigned>, SourceLocation> 
++    ExpansionToOriginalMap;
++
++  mutable llvm::DenseMap<FileID, SourceLocation> FileIDToOriginalLocMap;
++
++  // Newly added: store pre-expansion token strings
++  // mutable llvm::DenseMap<SourceLocation, std::string> OriginalTokenTextMap;
++  mutable llvm::DenseMap<FileID, llvm::DenseMap<unsigned, std::string>> MacroTokenTextMap;
++
++  // ended
++
+ 
+ public:
+   SourceManager(DiagnosticsEngine &Diag, FileManager &FileMgr,
+@@ -1246,6 +1261,19 @@ public:
+     return getSpellingLocSlowCase(Loc);
+   }
+ 
++  // added
++  /// Get the pre-expansion location (single step only)
++  SourceLocation getPreExpansionLoc(SourceLocation Loc) const;
++  
++  /// Traverse the entire macro expansion chain to get the original location
++  SourceLocation getOriginalLoc(SourceLocation Loc) const;
++  
++  /// Record macro expansion mapping
++  void recordMacroExpansion(SourceLocation ExpandedLoc, 
++                           SourceLocation OriginalLoc);
++  // ended
++
++
+   /// Given a SourceLocation object, return the spelling location
+   /// referenced by the ID.
+   ///
+@@ -1838,6 +1866,43 @@ public:
+   /// \return Location of the top-level macro caller.
+   SourceLocation getTopMacroCallerLoc(SourceLocation Loc) const;
+ 
++  // added
++  void recordFileIDMapping(FileID MacroFID, SourceLocation OriginalLoc);
++
++  // Newly added: record pre-expansion token strings
++  // void recordMacroTokenText(SourceLocation ExpandedLoc, StringRef OriginalText) {
++  //   if (ExpandedLoc.isValid()) {
++  //     OriginalTokenTextMap[ExpandedLoc] = OriginalText.str();
++  //   }
++  // }
++  void recordMacroTokenText(SourceLocation ExpandedLoc, StringRef OriginalText) {
++    if (ExpandedLoc.isValid() && ExpandedLoc.isMacroID()) {
++      FileID FID = getFileID(ExpandedLoc);
++      unsigned Offset = getFileOffset(ExpandedLoc);
++      MacroTokenTextMap[FID][Offset] = OriginalText.str();
++    }
++  }
++
++  // Newly added: record pre-expansion token strings
++  // void recordOriginalTokenText(SourceLocation ExpandedLoc, StringRef OriginalText) {
++  //   if (ExpandedLoc.isValid()) {
++  //     OriginalTokenTextMap[ExpandedLoc] = OriginalText.str();
++  //   }
++  // }
++  
++  // Newly added: get pre-expansion token strings
++  // llvm::Optional<std::string> getOriginalTokenText(SourceLocation Loc) const {
++  //   auto It = OriginalTokenTextMap.find(Loc);
++  //   if (It != OriginalTokenTextMap.end()) {
++  //     return It->second;
++  //   }
++  //   return llvm::None;
++  // }
++
++  // Newly added: get pre-expansion token strings
++  std::string getMacroTokenText(SourceLocation Loc) const;
++  // ended
++
+ private:
+   friend class ASTReader;
+   friend class ASTWriter;
+diff --git a/clang/include/clang/Lex/PPCallbacks.h b/clang/include/clang/Lex/PPCallbacks.h
+index 46cc56408..77b4acc39 100644
+--- a/clang/include/clang/Lex/PPCallbacks.h
++++ b/clang/include/clang/Lex/PPCallbacks.h
+@@ -760,6 +760,16 @@ public:
+     First->Endif(Loc, IfLoc);
+     Second->Endif(Loc, IfLoc);
+   }
++
++  // // added_2
++  // /// A token was found in a skipped block (e.g., identifier)
++  // virtual void SkippedToken(const Token &Tok, StringRef RawName) {}
++
++  // /// A #define was found in a skipped block
++  // virtual void SkippedMacroDefinition(const Token &MacroNameTok,
++  //                                     SourceLocation DirectiveLoc) {}
++  // // ended_2
++
+ };
+ 
+ }  // end namespace clang
+diff --git a/clang/include/clang/Lex/Preprocessor.h b/clang/include/clang/Lex/Preprocessor.h
+index fc7d0053f..3b1763750 100644
+--- a/clang/include/clang/Lex/Preprocessor.h
++++ b/clang/include/clang/Lex/Preprocessor.h
+@@ -302,6 +302,22 @@ public:
+   const char *getCheckPoint(FileID FID, const char *Start) const;
+ 
+ private:
++
++  // added
++  /// Tracking information for macro expansions
++  struct MacroExpansionTracker {
++    SourceLocation MacroCallLoc;  // macro call location
++    std::string MacroName;
++    SmallVector<FileID, 4> ExpandedFileIDs;  // FileIDs generated by expansion
++  };
++  
++  SmallVector<MacroExpansionTracker, 16> MacroExpansionStack;
++  //llvm::DenseMap<unsigned, std::string> MacroUseSites;
++  //llvm::DenseMap<unsigned, std::pair<std::string, std::string>> MacroUseSites;
++  llvm::DenseMap<unsigned, std::pair<std::string, unsigned>> MacroUseSites;
++  // ended
++
++
+   /// The code-completion handler.
+   CodeCompletionHandler *CodeComplete = nullptr;
+ 
+@@ -681,6 +697,45 @@ private:
+   SourceLocation MaxTokensOverrideLoc;
+ 
+ public:
++
++  // added
++  /// Called when a macro expansion begins
++  void pushMacroExpansion(SourceLocation CallLoc, StringRef MacroName) {
++    MacroExpansionTracker Tracker;
++    Tracker.MacroCallLoc = CallLoc;
++    Tracker.MacroName = MacroName.str();
++    MacroExpansionStack.push_back(Tracker);
++  }
++  
++  /// Called when a macro expansion ends
++  void popMacroExpansion() {
++    if (!MacroExpansionStack.empty()) {
++      MacroExpansionStack.pop_back();
++    }
++  }
++  
++  /// Record FileIDs generated by expansion
++  void recordExpandedFileID(FileID FID) {
++    if (!MacroExpansionStack.empty()) {
++      MacroExpansionStack.back().ExpandedFileIDs.push_back(FID);
++    }
++  }
++  
++  /// Get current macro expansion information
++  const MacroExpansionTracker* getCurrentMacroExpansion() const {
++    return MacroExpansionStack.empty() ? nullptr : &MacroExpansionStack.back();
++  }
++
++  // const llvm::DenseMap<unsigned, std::string> &getMacroUseSites() const {
++  //   return MacroUseSites;
++  // }
++  //const llvm::DenseMap<unsigned, std::pair<std::string, std::string>> &getMacroUseSites() const {
++  const llvm::DenseMap<unsigned, std::pair<std::string, unsigned>> &getMacroUseSites() const {
++    return MacroUseSites;
++  }
++  // ended
++
++
+   struct PreambleSkipInfo {
+     SourceLocation HashTokenLoc;
+     SourceLocation IfTokenLoc;
+diff --git a/clang/lib/Basic/SourceManager.cpp b/clang/lib/Basic/SourceManager.cpp
+index 533a9fe88..7870c7303 100644
+--- a/clang/lib/Basic/SourceManager.cpp
++++ b/clang/lib/Basic/SourceManager.cpp
+@@ -640,7 +640,31 @@ SourceLocation SourceManager::createMacroArgExpansionLoc(
+     SourceLocation SpellingLoc, SourceLocation ExpansionLoc, unsigned Length) {
+   ExpansionInfo Info = ExpansionInfo::createForMacroArg(SpellingLoc,
+                                                         ExpansionLoc);
+-  return createExpansionLocImpl(Info, Length);
++  
++  // added
++  SourceLocation LocID = createExpansionLocImpl(Info, Length);
++  
++  FileID MacroArgFID = getFileID(LocID);
++  
++  // If ExpansionLoc is a MacroID, get the pre-expansion location
++  SourceLocation ActualExpansionLoc = ExpansionLoc;
++  if (ExpansionLoc.isMacroID()) {
++    ActualExpansionLoc = getExpansionLoc(ExpansionLoc);
++  }
++  
++  // Map the entire FileID
++  recordFileIDMapping(MacroArgFID, ActualExpansionLoc);
++  
++  // Debug output
++  // llvm::errs() << "createMacroArgExpansionLoc: FID=" << MacroArgFID.getHashValue()
++  //              << " -> ActualExpansionLoc=" << ActualExpansionLoc.getRawEncoding()
++  //              << " (original was MacroID: " << ExpansionLoc.isMacroID() << ")\n";
++  
++  
++  return LocID;  // Required
++  // ended
++
++  //return createExpansionLocImpl(Info, Length);
+ }
+ 
+ SourceLocation SourceManager::createExpansionLoc(
+@@ -650,7 +674,47 @@ SourceLocation SourceManager::createExpansionLoc(
+     SourceLocation::UIntTy LoadedOffset) {
+   ExpansionInfo Info = ExpansionInfo::create(
+       SpellingLoc, ExpansionLocStart, ExpansionLocEnd, ExpansionIsTokenRange);
+-  return createExpansionLocImpl(Info, Length, LoadedID, LoadedOffset);
++
++  // // added
++  SourceLocation LocID = createExpansionLocImpl(Info, Length, LoadedID, LoadedOffset);
++  
++  // Get FileID
++  FileID MacroFID = getFileID(LocID);
++  
++  // Map the entire FileID
++  recordFileIDMapping(MacroFID, ExpansionLocStart);
++  
++  // llvm::errs() << "createExpansionLoc: FID=" << MacroFID.getHashValue() 
++  //              << " -> ExpansionLocStart=" << ExpansionLocStart.getRawEncoding() << "\n";
++
++  // Fix: get original token string from ExpansionLocStart
++  if (ExpansionLocStart.isFileID() && !isInSystemHeader(ExpansionLocStart)) {
++    const char *ExpansionData = getCharacterData(ExpansionLocStart);
++    
++    // Get identifier length
++    const char *End = ExpansionData;
++    while (*End && (std::isalnum((unsigned char)*End) || *End == '_')) {
++      End++;
++    }
++    
++    if (End > ExpansionData) {
++      std::string OriginalText(ExpansionData, End - ExpansionData);
++      
++      // Record at post-expansion location (LocID)
++      if (LocID.isMacroID()) {
++        recordMacroTokenText(LocID, OriginalText);
++        
++        // llvm::errs() << "createExpansionLoc: Recorded '" << OriginalText 
++        //              << "' at FID=" << MacroFID.getHashValue()
++        //              << " Offset=0\n";
++      }
++    }
++  }
++  // End
++  return LocID;
++  // // ended
++
++  //return createExpansionLocImpl(Info, Length, LoadedID, LoadedOffset);
+ }
+ 
+ SourceLocation SourceManager::createTokenSplitLoc(SourceLocation Spelling,
+@@ -658,6 +722,11 @@ SourceLocation SourceManager::createTokenSplitLoc(SourceLocation Spelling,
+                                                   SourceLocation TokenEnd) {
+   assert(getFileID(TokenStart) == getFileID(TokenEnd) &&
+          "token spans multiple files");
++  
++  // added
++  // llvm::errs() << "createTokenSplitLoc called!\n";
++  // ended
++
+   return createExpansionLocImpl(
+       ExpansionInfo::createForTokenSplit(Spelling, TokenStart, TokenEnd),
+       TokenEnd.getOffset() - TokenStart.getOffset());
+@@ -2391,3 +2460,111 @@ SourceManagerForFile::SourceManagerForFile(StringRef FileName,
+   assert(ID.isValid());
+   SourceMgr->setMainFileID(ID);
+ }
++
++// added
++// Start of addition
++
++SourceLocation SourceManager::getPreExpansionLoc(SourceLocation Loc) const {
++  if (Loc.isMacroID()) {
++    FileID FID = getFileID(Loc);
++    unsigned Offset = getFileOffset(Loc);
++    
++    // First check FileID map
++    auto FileIDIt = FileIDToOriginalLocMap.find(FID);
++    if (FileIDIt != FileIDToOriginalLocMap.end()) {
++      // llvm::errs() << "LOOKUP_FILEID: FID=" << FID.getHashValue() << " FOUND!\n";
++      return FileIDIt->second;
++    }
++    
++    // // Next check (FileID, Offset) map
++    // llvm::errs() << "LOOKUP: FID=" << FID.getHashValue() 
++    //              << " Offset=" << Offset << "\n";
++    
++    auto It = ExpansionToOriginalMap.find({FID, Offset});
++    if (It != ExpansionToOriginalMap.end()) {
++      // llvm::errs() << "LOOKUP: FOUND!\n";
++      return It->second;
++    }
++    // else {
++    //   llvm::errs() << "LOOKUP: NOT FOUND! Map size=" << ExpansionToOriginalMap.size() << "\n";
++    // }
++  }
++  
++  return Loc;
++}
++
++SourceLocation SourceManager::getOriginalLoc(SourceLocation Loc) const {
++  int depth = 0;
++  const int MAX_DEPTH = 100; // Prevent infinite loop
++  
++  while (Loc.isMacroID() && depth < MAX_DEPTH) {
++    SourceLocation PreLoc = getPreExpansionLoc(Loc);
++    if (PreLoc.getRawEncoding() == Loc.getRawEncoding()) {
++      break; // Cannot trace further
++    }
++    Loc = PreLoc;
++    depth++;
++  }
++  
++  return Loc;
++}
++
++void SourceManager::recordMacroExpansion(SourceLocation ExpandedLoc, 
++                                        SourceLocation OriginalLoc) {
++  if (ExpandedLoc.isInvalid() || OriginalLoc.isInvalid()) {
++    return;
++  }
++
++  FileID FID = getFileID(ExpandedLoc);
++  unsigned Offset = getFileOffset(ExpandedLoc);
++
++  // Added debug output
++  // llvm::errs() << "RECORD: FID=" << FID.getHashValue() 
++  //              << " Offset=" << Offset 
++  //              << " isMacroID=" << ExpandedLoc.isMacroID() << "\n";
++
++  // Record in map
++  ExpansionToOriginalMap[{FID, Offset}] = OriginalLoc;
++}
++
++// End of addition
++
++void SourceManager::recordFileIDMapping(FileID MacroFID, SourceLocation OriginalLoc) {
++  if (MacroFID.isInvalid() || OriginalLoc.isInvalid()) {
++    return;
++  }
++  
++  FileIDToOriginalLocMap[MacroFID] = OriginalLoc;
++  
++  // llvm::errs() << "RECORD_FILEID: FID=" << MacroFID.getHashValue() 
++  //              << " -> Loc=" << OriginalLoc.getRawEncoding() << "\n";
++}
++
++
++std::string SourceManager::getMacroTokenText(SourceLocation Loc) const {
++  if (Loc.isInvalid() || !Loc.isMacroID()) {
++    //llvm::errs() << "getMacroTokenText: Invalid or not MacroID\n";
++    return "";
++  }
++  
++  FileID FID = getFileID(Loc);
++  unsigned Offset = getFileOffset(Loc);
++  
++  // llvm::errs() << "getMacroTokenText: Searching FID=" << FID.getHashValue() 
++  //              << " Offset=" << Offset << "\n";
++  
++  auto FIDIt = MacroTokenTextMap.find(FID);
++  if (FIDIt != MacroTokenTextMap.end()) {
++    auto OffsetIt = FIDIt->second.find(Offset);
++    if (OffsetIt != FIDIt->second.end()) {
++      // llvm::errs() << "getMacroTokenText: FOUND=" << OffsetIt->second << "\n";
++      return OffsetIt->second;
++    }
++  }
++  
++  // llvm::errs() << "getMacroTokenText: NOT FOUND (Map has " 
++  //              << MacroTokenTextMap.size() << " FileIDs)\n";
++  return "";
++}
++
++// ended
+\ No newline at end of file
+diff --git a/clang/lib/Lex/PPDirectives.cpp b/clang/lib/Lex/PPDirectives.cpp
+index 4e77df9ec..15b93065a 100644
+--- a/clang/lib/Lex/PPDirectives.cpp
++++ b/clang/lib/Lex/PPDirectives.cpp
+@@ -579,6 +579,16 @@ void Preprocessor::SkipExcludedConditionalBlock(SourceLocation HashTokenLoc,
+           break;
+         }
+ 
++        // // added_2
++        // // Addition: notify identifiers during skipping
++        // if (Callbacks && Tok.is(tok::raw_identifier)) {
++        //   // raw_identifier から IdentifierInfo を取得
++        //   // LexingRawMode なので getIdentifierInfo() は使えない
++        //   StringRef Name = Tok.getRawIdentifier();
++        //   Callbacks->SkippedToken(Tok, Name);
++        // }
++        // // ended_2
++
+         // If this token is not a preprocessor directive, just skip it.
+         if (Tok.isNot(tok::hash) || !Tok.isAtStartOfLine())
+           continue;
+@@ -619,6 +629,21 @@ void Preprocessor::SkipExcludedConditionalBlock(SourceLocation HashTokenLoc,
+     StringRef RI = Tok.getRawIdentifier();
+ 
+     char FirstChar = RI[0];
++
++    // // added_2
++    // // Addition: capture #define
++    // if (Directive == "define" && Callbacks) {
++    //   Token MacroNameTok;
++    //   CurLexer->Lex(MacroNameTok);
++    //   if (MacroNameTok.is(tok::raw_identifier)) {
++    //       Callbacks->SkippedMacroDefinition(MacroNameTok, Tok.getLocation());
++    //   }
++    //   CurPPLexer->ParsingPreprocessorDirective = false;
++    //   if (CurLexer) CurLexer->resetExtendedTokenMode();
++    //   continue;
++    // }
++    // // ended_2
++
+     if (FirstChar >= 'a' && FirstChar <= 'z' &&
+         FirstChar != 'i' && FirstChar != 'e') {
+       CurPPLexer->ParsingPreprocessorDirective = false;
+diff --git a/clang/lib/Lex/PPLexerChange.cpp b/clang/lib/Lex/PPLexerChange.cpp
+index 8221db46e..3c999ea8f 100644
+--- a/clang/lib/Lex/PPLexerChange.cpp
++++ b/clang/lib/Lex/PPLexerChange.cpp
+@@ -158,6 +158,28 @@ void Preprocessor::EnterMacro(Token &Tok, SourceLocation ILEnd,
+     TokLexer->Init(Tok, ILEnd, Macro, Args);
+   }
+ 
++  // added
++  // Fix: record generated FileID
++  if (TokLexer) {
++    SourceManager &SM = getSourceManager();
++    
++    // Incorrect: Tok.getLocation() is the original location
++    // FileID MacroFID = SM.getFileID(Tok.getLocation());
++    
++    // Correct: get post-expansion token location from TokenLexer
++    // However, tokens are not yet generated from TokenLexer...
++    // A different approach is needed
++    
++    const MacroExpansionTracker* Tracker = getCurrentMacroExpansion();
++    // if (Tracker) {
++    //   llvm::errs() << "EnterMacro: Tracker found, MacroName=" << Tracker->MacroName << "\n";
++      
++    //   // FileID is not yet determined at this point
++    //   // It will be recorded later when recordExpandedFileID is called
++    // }
++  }
++  // ended
++  
+   PushIncludeMacroStack();
+   CurDirLookup = nullptr;
+   CurTokenLexer = std::move(TokLexer);
+@@ -599,6 +621,12 @@ bool Preprocessor::HandleEndOfFile(Token &Result, bool isEndOfMacro) {
+ /// HandleEndOfTokenLexer - This callback is invoked when the current TokenLexer
+ /// hits the end of its token stream.
+ bool Preprocessor::HandleEndOfTokenLexer(Token &Result) {
++
++  // added
++  popMacroExpansion();
++  // llvm::errs() << "HandleEndOfTokenLexer: popMacroExpansion called\n";
++  // ended
++
+   assert(CurTokenLexer && !CurPPLexer &&
+          "Ending a macro when currently in a #include file!");
+ 
+diff --git a/clang/lib/Lex/PPMacroExpansion.cpp b/clang/lib/Lex/PPMacroExpansion.cpp
+index fb88ec2bf..680ee7a90 100644
+--- a/clang/lib/Lex/PPMacroExpansion.cpp
++++ b/clang/lib/Lex/PPMacroExpansion.cpp
+@@ -481,6 +481,36 @@ bool Preprocessor::HandleMacroExpandedIdentifier(Token &Identifier,
+ 
+   MacroInfo *MI = M.getMacroInfo();
+ 
++  // added
++  SourceLocation MacroCallLoc = Identifier.getLocation();
++  StringRef MacroName = Identifier.getIdentifierInfo()->getName();
++  pushMacroExpansion(MacroCallLoc, MacroName);
++
++  // MacroUseSites[MacroCallLoc.getRawEncoding()] = MacroName.str();
++
++  // {
++  //   std::string defLoc;
++  //   SourceLocation DefStart = MI->getDefinitionLoc();
++  //   if (DefStart.isValid()) {
++  //       PresumedLoc PLoc = getSourceManager().getPresumedLoc(DefStart);
++  //       if (PLoc.isValid()) {
++  //           llvm::raw_string_ostream OS(defLoc);
++  //           OS << PLoc.getFilename() << ":" << PLoc.getLine() << ":" << PLoc.getColumn();
++  //       }
++  //   }
++  //   MacroUseSites[MacroCallLoc.getRawEncoding()] = {MacroName.str(), defLoc};
++  // }
++  {
++    unsigned defRawLoc = 0;
++    SourceLocation DefStart = MI->getDefinitionLoc();
++    if (DefStart.isValid()) {
++        defRawLoc = DefStart.getRawEncoding();
++    }
++    MacroUseSites[MacroCallLoc.getRawEncoding()] = {MacroName.str(), defRawLoc};
++  }
++  // ended
++
++
+   // If this is a macro expansion in the "#if !defined(x)" line for the file,
+   // then the macro could expand to different things in other contexts, we need
+   // to disable the optimization in this case.
+diff --git a/clang/lib/Lex/TokenLexer.cpp b/clang/lib/Lex/TokenLexer.cpp
+index 856d56827..0c761119e 100644
+--- a/clang/lib/Lex/TokenLexer.cpp
++++ b/clang/lib/Lex/TokenLexer.cpp
+@@ -683,6 +683,27 @@ bool TokenLexer::Lex(Token &Tok) {
+     }
+ 
+     Tok.setLocation(instLoc);
++
++    // added
++    // Newly added: record after expansion location is determined
++    if (CurTokenIdx > 0) {
++      const Token &OrigTok = Tokens[CurTokenIdx - 1];
++      
++      if (OrigTok.is(tok::identifier)) {
++        StringRef OriginalText = OrigTok.getIdentifierInfo()->getName();
++        SourceLocation ExpandedLoc = Tok.getLocation();
++        
++        if (ExpandedLoc.isMacroID()) {
++          SM.recordMacroTokenText(ExpandedLoc, OriginalText);
++          
++          // llvm::errs() << "TokenLexer::Lex: Recorded '" << OriginalText 
++          //              << "' at FID=" << SM.getFileID(ExpandedLoc).getHashValue()
++          //              << " Offset=" << SM.getFileOffset(ExpandedLoc) << "\n";
++        }
++      }
++    }
++    // ended
++
+   }
+ 
+   // If this is the first token, set the lexical properties of the token to
