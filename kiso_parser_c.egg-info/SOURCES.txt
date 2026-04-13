@@ -1,9 +1,0 @@
-LICENSE
-README.md
-pyproject.toml
-c_parser_api/__init__.py
-c_parser_api/c_parser.py
-kiso_parser_c.egg-info/PKG-INFO
-kiso_parser_c.egg-info/SOURCES.txt
-kiso_parser_c.egg-info/dependency_links.txt
-kiso_parser_c.egg-info/top_level.txt

@@ -5,3 +5,6 @@ include_finder*/build
 llvm-project/
 llvm-custom/
 c_parser_api/__pycache__/
+*.egg-info/
+__pycache__/
+*.pyc
