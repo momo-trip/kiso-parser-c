@@ -139,6 +139,10 @@ from llm_api import (
 # )
 
 
+MACRO_HOME = "/root/SmartC2Rust/macro"
+TRANS_HOME = "/root/SmartC2Rust/trans"
+C_PARSER_HOME = "/root/kiso-parser-c"
+
 LLM_ON = False
 WEIGHT = None
 
@@ -7219,7 +7223,7 @@ def clone_compile_json(original_dir, old_dir, new_dir):  #given_compile_dir, old
     # print(compile_json_path)
     compile_commands = read_json(compile_json_path)
     compile_commands = replace_in_value(compile_commands, old_dir, new_dir)
-    # setup_compile_json(given_compile_dir, given_compile_json_path, "/home/ubuntu/macrust", "/home/ubuntu/allrust")
+    # setup_compile_json(given_compile_dir, given_compile_json_path, f"{MACRO_HOME}", f"{TRANS_HOME}")
     # compile_dir, compile_json_path = given_compile_dir, given_compile_json_path
     write_json(new_compile_json_path, compile_commands)
 
@@ -7424,7 +7428,7 @@ def parse_all(round_id, macro_finder, target_dir, meta_dir, div_meta_dir, databa
             # print(compile_json_path)
             compile_commands = read_json(compile_json_path)
             compile_commands = replace_in_value(compile_commands, "macrust", "allrust")
-            # setup_compile_json(given_compile_dir, given_compile_json_path, "/home/ubuntu/macrust", "/home/ubuntu/allrust")
+            # setup_compile_json(given_compile_dir, given_compile_json_path, f"{MACRO_HOME}", f"{TRANS_HOME}")
             # compile_dir, compile_json_path = given_compile_dir, given_compile_json_path
             write_json(compile_json_path, compile_commands)
             """
@@ -8346,7 +8350,7 @@ def process_find_headers(entry, analyzer_path, compile_dir):
 
 
 def find_headers(target_dir, database_dir, dep_json_path, compile_dir, compile_json, round_id):
-    analyzer_path = "/home/ubuntu/c_parser/include_finder/build/analyzer" 
+    analyzer_path = f"{C_PARSER_HOME}/include_finder/build/analyzer" 
 
     # Path normalization
     """
@@ -8451,11 +8455,11 @@ def find_headers(target_dir, database_dir, dep_json_path, compile_dir, compile_j
     # Below this, save header.json to dep_json_path in a different format
     # [
     # {
-    #     "including_file": "/home/ubuntu/macrust/trans_c_0000/libjpeg-turbo-2.1.0/jfdctflt.c",
+    #     "including_file": f"{MACRO_HOME}/trans_c_0000/libjpeg-turbo-2.1.0/jfdctflt.c",
     #     "included_file": [
-    #         "/home/ubuntu/macrust/trans_c_0000/libjpeg-turbo-2.1.0/jinclude.h:line:column",
-    #         "/home/ubuntu/macrust/trans_c_0000/libjpeg-turbo-2.1.0/jpeglib.h:column",
-    #         "/home/ubuntu/macrust/trans_c_0000/libjpeg-turbo-2.1.0/jdct.h:column",
+    #         f"{MACRO_HOME}/trans_c_0000/libjpeg-turbo-2.1.0/jinclude.h:line:column",
+    #         f"{MACRO_HOME}/trans_c_0000/libjpeg-turbo-2.1.0/jpeglib.h:column",
+    #         f"{MACRO_HOME}/trans_c_0000/libjpeg-turbo-2.1.0/jdct.h:column",
     # },
 
     # Group by including_file
@@ -8674,10 +8678,10 @@ def generate_metadata(macro_on, target_dir, meta_dir, database_dir, compile_dir,
     """
     print("Starting generate_metadata...")
 
-    analyzer_path = "/home/ubuntu/c_parser/c_analyzer/analyzer" 
-    analyzer_path = "/home/ubuntu/c_parser/c_analyzer/build/analyzer" 
-    analyzer_path = "/home/ubuntu/c_parser/test/build/analyzer"
-    analyzer_path = "/home/ubuntu/c_parser/usage_analyzer/build/analyzer"
+    analyzer_path = f"{C_PARSER_HOME}/c_analyzer/analyzer" 
+    analyzer_path = f"{C_PARSER_HOME}/c_analyzer/build/analyzer" 
+    analyzer_path = f"{C_PARSER_HOME}/test/build/analyzer"
+    analyzer_path = f"{C_PARSER_HOME}/usage_analyzer/build/analyzer"
 
 
     # Path normalization
@@ -9140,9 +9144,9 @@ def process_generate_macro_usage_metadata(entry, analyzer_path, compile_dir):
 
 def generate_macro_usage_metadata(target_dir, meta_dir, database_dir, independent_path, flag_path, compile_dir, compile_json, round_id):
 
-    analyzer_path = "/home/ubuntu/c_parser/test2/build/analyzer"
-    analyzer_path = "/home/ubuntu/c_parser/usage_macro_analyzer/build/analyzer"
-    analyzer_path = "/home/ubuntu/c_parser/usage_macro_ref_analyzer/build/analyzer"
+    analyzer_path = f"{C_PARSER_HOME}/test2/build/analyzer"
+    analyzer_path = f"{C_PARSER_HOME}/usage_macro_analyzer/build/analyzer"
+    analyzer_path = f"{C_PARSER_HOME}/usage_macro_ref_analyzer/build/analyzer"
 
     # Path normalization
     """
@@ -9476,7 +9480,7 @@ def generate_macro_metadata(target_dir, meta_dir, database_dir, independent_path
     """
     Specify the directory containing compile_commands.json, run the tool created in macro_analyzer.cpp in batch, extract macro metadata (JSON), and save it split by file.
     """
-    macro_analyzer_path = "/home/ubuntu/macrust/macro_analyzer/build/macro_analyzer"
+    macro_analyzer_path = f"{MACRO_HOME}/macro_analyzer/build/macro_analyzer"
 
     """
     compile_dir = find_compile_commands_json(target_dir)
@@ -10061,10 +10065,10 @@ def run_with_trace(workspace, trace_output, tracer_so_path, args=None):
 
 if __name__ == "__main__":
 
-    workspace_dir = "/home/ubuntu/c_parser/sample"
-    trace_output = "/home/ubuntu/c_parser/sample/trace.log"
-    tracer_so = "/home/ubuntu/c_parser/c_parser_api/libtracer.so"
-    binary_path = "/home/ubuntu/c_parser/sample/test_ffi"
+    workspace_dir = f"{C_PARSER_HOME}/sample"
+    trace_output = f"{C_PARSER_HOME}/sample/trace.log"
+    tracer_so = f"{C_PARSER_HOME}/c_parser_api/libtracer.so"
+    binary_path = f"{C_PARSER_HOME}/sample/test_ffi"
 
     """
     env = os.environ.copy()
@@ -10073,19 +10077,19 @@ if __name__ == "__main__":
     subprocess.run([binary_path], env=env)
     """
 
-    trace_output = "/home/ubuntu/macrust/trans_re_0000/bst/genifai_results/test1_trace.log"
-    parse_trace(trace_output, "/home/ubuntu/macrust/trans_re_0000", "call_tree.txt") # binary_path: str, 
+    trace_output = f"{MACRO_HOME}/trans_re_0000/bst/genifai_results/test1_trace.log"
+    parse_trace(trace_output, f"{MACRO_HOME}/trans_re_0000", "call_tree.txt") # binary_path: str, 
 
 
-    workspace_dir = "/home/ubuntu/c_parser/sample"
+    workspace_dir = f"{C_PARSER_HOME}/sample"
     trace_output = "trace.log"
 
     binary_path = run_with_trace(
         workspace=workspace_dir,
         trace_output=trace_output,
-        tracer_so_path = "/home/ubuntu/c_parser/c_parser_api/libtracer.so",
-        # build_script="/home/ubuntu/allrust/workspace_0000_zopfli/run_all.sh",
-        # test_script="/home/ubuntu/allrust/workspace_0000_zopfli/zopfli/run_test.sh",
+        tracer_so_path = f"{C_PARSER_HOME}/c_parser_api/libtracer.so",
+        # build_script=f"{TRANS_HOME}/workspace_0000_zopfli/run_all.sh",
+        # test_script=f"{TRANS_HOME}/workspace_0000_zopfli/zopfli/run_test.sh",
         # output="trace.txt",
     )
 
@@ -10103,6 +10107,6 @@ LD_PRELOAD=/path/to/libtracer.so ./program
 
 """
 ls -la /usr/local/lib/libtracer.so
-sudo cp /home/ubuntu/c_parser/c_parser_api/libtracer.so /usr/local/lib/
+sudo cp /root/kiso-parser-c/c_parser_api/libtracer.so /usr/local/lib/
 sudo ldconfig
 """
