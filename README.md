@@ -50,25 +50,12 @@ cd usage_macro_analyzer
 ./build.sh 
 ```
 
-### 3. Python API
-
-```bash
-pip install -e .
-# or
-pip install -r requirements.txt
-```
 
 ## Usage
 
 ### Symbol Analysis - usage_analyzer
 
 Extracts symbols such as functions, variables, structs, typedefs, enums, and macros from source code, and outputs their dependencies (`uses`) in JSON.
-
-**Analyze a single file:**
-
-```bash
-./usage_analyzer/build/analyzer test.c
-```
 
 **Analyze a project using compile_commands.json:**
 
@@ -124,12 +111,6 @@ The directory specified with `-p` must contain `compile_commands.json`. For CMak
 ### Detailed Macro Analysis - usage_macro_analyzer
 
 In addition to macro definitions, expansions, and usage locations, it resolves symbols (`uses`) referenced within macro bodies. It adopts a two-phase approach combining preprocessing-time analysis and AST traversal with deferred resolution.
-
-**Analyze a single file:**
-
-```bash
-./usage_macro_analyzer/build/usage_macro_analyzer test.c
-```
 
 **Analyze a project using compile_commands.json:**
 
