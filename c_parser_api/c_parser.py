@@ -166,8 +166,6 @@ CXTranslationUnit_IgnoreNonErrorsFromIncludedFiles = 0x4000
 CXTranslationUnit_RetainExcludedConditionalBlocks = 0x8000
 
 
-
-
 @contextmanager
 def timeout(seconds):
     def timeout_handler(signum, frame):
@@ -1761,12 +1759,9 @@ def get_related_main(main_path, meta_dir, callee_main_path, callee_path, distanc
 
 
 
-
-
 #############################################
 ##### Translation
 #############################################
-
 
 def p_f(process_function, dir, c_flag, h_flag, *args):
     dir = os.path.abspath(dir)
@@ -1787,7 +1782,6 @@ def p_f(process_function, dir, c_flag, h_flag, *args):
             fut.result()
 
 # If process_function writes to the same file (e.g., appending results to a shared JSON), conflicts may occur. Writing to separate output files for each input file avoids this issue.
-
 
 def replace_comments_with_spaces_file(file_path, raw_dir):
 
@@ -4242,7 +4236,6 @@ def insert_header_directive(custom_header_path):
     
     #print(f"Created custom header: {custom_header_path}")
 
-    
 
 def get_each_version_path(file_path, max_version):
     """Return a list of versioned paths from the original file path"""
@@ -6969,13 +6962,6 @@ Simple conditional logic         △         ✓
 # YY_RULE_SETUP
 # YY_FATAL_ERROR
 
-"""
-taken_directive_path: macros with if directives
-all_directive_path: macros with if directives including skippped macros
-
-taken_macros_path: all macros 
-all_macros_path: all macros including skippped macros
-"""
 
 def merge_meta_macros_with_app(target_dir, gen_macro_meta_path, macros_usage_data):
     print("merging macro_defs with usage")
@@ -10021,9 +10007,8 @@ def parse_trace(trace_path: str, base_dir: str, output_path: str, is_rust: bool)
         print(f"WARNING: Output truncated at {MAX_OUTPUT_LINES} lines")
 
 """
-cargo install rustfilt
+Need: cargo install rustfilt
 """
-
 
 def find_binaries(workspace):
     """Search for ELF binaries in the workspace"""
