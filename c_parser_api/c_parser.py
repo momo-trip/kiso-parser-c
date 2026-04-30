@@ -7673,7 +7673,7 @@ def detect_flag(all_directive_path, flag_path, gen_macro_usage_meta_path): # , g
             uv['is_flag'] = True
 
     for file_path, data in all_macros.items():
-        for directive in ("ifdef", "ifndef"):
+        for directive in ("ifdef", "ifndef"): #for directive in ("ifdef", "ifndef", "if", "elif"): #, "else"):
             for item in data[directive]:
                 if 'name' in item:
                     process_macro(item)
@@ -7681,8 +7681,20 @@ def detect_flag(all_directive_path, flag_path, gen_macro_usage_meta_path): # , g
                     for each_item in item['macros']:
                         process_macro(each_item)
 
+        for directive in ("if", "elif"):
+            for item in data.get(directive, []):
+                if 'macros' not in item or 'condition' not in item:
+                    continue
+                condition = item['condition']
+                defined_names = set(re.findall(r'defined\s*\(\s*(\w+)\s*\)', condition))
+                for each_item in item['macros']:
+                    if each_item['name'] in defined_names:
+                        process_macro(each_item)
+
+
     write_json(flag_path, conds)  # list() not needed (already a list)
     write_json(gen_macro_usage_meta_path, usage_macros)
+
 
 
 def insert_target_annotation(target_dir, target_path, marker):
