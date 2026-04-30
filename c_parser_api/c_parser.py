@@ -70,7 +70,6 @@ import threading
 from pathlib import Path
 from collections import OrderedDict
 
-
 from clang.cindex import (
     Index, 
     CursorKind, 
@@ -81,7 +80,6 @@ from clang.cindex import (
     CompilationDatabaseError,
     Config
 )
-
 
 from utils_api import (
     # normal
@@ -133,11 +131,6 @@ from llm_api import (
     save_coverage_report
 )
 
-# from .translate_core import (
-#     obtain_metadata,
-#     read_specific_lines,
-# )
-
 
 MACRO_HOME = "/root/SmartC2Rust/macro"
 TRANS_HOME = "/root/SmartC2Rust/trans"
@@ -146,24 +139,6 @@ MACRO_PARSER_HOME = "/root/kiso-parser-macro"
 
 LLM_ON = False
 WEIGHT = None
-
-CXTranslationUnit_None = 0x0
-CXTranslationUnit_DetailedPreprocessingRecord = 0x01
-CXTranslationUnit_Incomplete = 0x02
-CXTranslationUnit_PrecompiledPreamble = 0x04
-CXTranslationUnit_CacheCompletionResults = 0x08
-CXTranslationUnit_ForSerialization = 0x10
-CXTranslationUnit_CXXChainedPCH = 0x20
-CXTranslationUnit_SkipFunctionBodies = 0x40
-CXTranslationUnit_IncludeBriefCommentsInCodeCompletion = 0x80
-CXTranslationUnit_CreatePreambleOnFirstParse = 0x100
-CXTranslationUnit_KeepGoing = 0x200
-CXTranslationUnit_SingleFileParse = 0x400
-CXTranslationUnit_LimitSkipFunctionBodiesToPreamble = 0x800
-CXTranslationUnit_IncludeAttributedTypes = 0x1000
-CXTranslationUnit_VisitImplicitAttributes = 0x2000
-CXTranslationUnit_IgnoreNonErrorsFromIncludedFiles = 0x4000
-CXTranslationUnit_RetainExcludedConditionalBlocks = 0x8000
 
 
 @contextmanager
@@ -259,8 +234,6 @@ def generate_is_program(target_dir, dep_json_path, is_program_path):
 
 
 def is_system_file(use_file, program_files):
-    #program_files = set(read_json(is_program_path))
-
     if use_file not in program_files:
         return True
 
@@ -285,7 +258,6 @@ def get_dep_files(dep_json_path):
     return list(dep_files)
 
     
-
 def is_static_function(node) -> bool:
     try:
         tokens = list(node.get_tokens())
@@ -339,7 +311,6 @@ def get_var_type(node, libclang):
 
     #initial_case_type = var_type
     #var_type = var_type
-
 
     # if libclang is True: # added # Do we need this?
     #     user_defined_type = get_user_defined_type(node) #.type)
@@ -664,8 +635,6 @@ def write_definitions(func_json_path, process_type, update_flag, meta_dir):
 
     
     for def_file_path, items in file_path_groups.items():
-    #for item in data:
-        #def_file_path = item['def_file_path']
 
         if def_file_path is None:
             continue
@@ -673,9 +642,6 @@ def write_definitions(func_json_path, process_type, update_flag, meta_dir):
         meta_data, meta_path = get_metadata(def_file_path, meta_dir, None)
         if not meta_path.startswith(f'{meta_dir}/workspace'):
             continue
-
-        # print(f"def_file_path: {def_file_path}")
-        # print(f"meta_path: {meta_path}")
 
         if meta_data is None:
             meta_data = []
@@ -6844,7 +6810,7 @@ def define_blocks(round_id, all_directive_path, guards_path, target_dir, meta_di
     combine_with_outermost_conditioned_blocks(all_directive_path, outermost_path, guards_path, target_dir, round_id, meta_dir, is_program_path) # True, True, 
 
     if round_id == "3":
-        # I think metadata should be stored separately for non-grouped and parallel ones.
+        # Metadata should be stored separately for non-grouped and parallel ones.
         parent = os.path.dirname(div_meta_dir)
         copy_directory(meta_dir, parent)
 
@@ -7155,8 +7121,6 @@ def get_compile_json(target_dir):
     if excluded_count > 0:
         print(f"Filtered out {excluded_count} files with excluded extensions: {EXCLUDE_EXTENSIONS}") 
         write_json(compile_json_path, compile_commands)
-    
-    ########
 
     convert_to_absolute_paths(compile_json_path)
 
@@ -7174,12 +7138,16 @@ def replace_in_value(obj, old, new):
         return obj
 
 
-def setup_compile_json(given_compile_dir, old_directory, new_directory):  # , given_compile_json_path
-    
+def setup_compile_json(given_compile_dir, old_directory, new_directory):
+
     given_compile_json_path = f"{given_compile_dir}/compile_commands.json"
 
     new_compile_dir = given_compile_dir.replace(old_directory, new_directory)
     new_compile_json_path = given_compile_json_path.replace(old_directory, new_directory)
+
+    # print(new_compile_dir)
+    # print(given_compile_dir)
+    # print(given_compile_json_path)
 
     copy_file(given_compile_json_path, new_compile_dir)
 
@@ -7194,10 +7162,10 @@ def setup_compile_json(given_compile_dir, old_directory, new_directory):  # , gi
     print(f"Setup compile json: {new_compile_json_path}")
     print(f"Replaced paths: {old_directory} -> {new_directory}")
     
-    return new_compile_json_path  #given_compile_json_path
+    return new_compile_json_path
 
 
-def clone_compile_json(original_dir, old_dir, new_dir):  #given_compile_dir, old_dir, new_dir):
+def clone_compile_json(original_dir, old_dir, new_dir):
     given_compile_dir = find_compile_commands_json(original_dir)
 
     compile_json_path = f"{given_compile_dir}/compile_commands.json"
@@ -7398,13 +7366,14 @@ def parse_all(round_id, macro_finder, target_dir, meta_dir, div_meta_dir, databa
     check_permission(target_dir)
 
     compile_dir, compile_json_path = get_compile_json(target_dir)
-
+    # print(target_dir)
+    # print(compile_json_path)
 
     if round_id == "all":
         compile_commands = read_json(compile_json_path)
 
-        print(given_compile_json_path)
-        print(compile_json_path)
+        # print(given_compile_json_path)
+        # print(compile_json_path)
 
         if compile_dir is None or len(compile_commands) == 0:
             copy_file(f"{database_dir}/compile_commands.json", given_compie_dir)
@@ -7429,6 +7398,8 @@ def parse_all(round_id, macro_finder, target_dir, meta_dir, div_meta_dir, databa
             raise ValueError("Did not find compile_commands.json")
 
     # Append with the current compile_commands.json
+    # print(database_dir)
+
     append_compile_json_path(compile_json_path, database_dir)
 
     with ProcessPoolExecutor(max_workers=4) as pool:
@@ -7557,12 +7528,14 @@ def parse_all(round_id, macro_finder, target_dir, meta_dir, div_meta_dir, databa
     #if div_meta_dir is not None:
     recreate_directory(div_meta_dir)
 
-    # I think metadata should be stored separately for non-grouped and parallel ones.
-    #if div_meta_dir is not None:
+    # Metadata should be stored separately for non-grouped and parallel ones.
+    # if div_meta_dir is not None:
     parent = os.path.dirname(div_meta_dir)
     copy_directory(meta_dir, parent)
 
-    combine_with_innermost_conditioned_blocks(all_directive_path, target_dir, database_dir, round_id, div_meta_dir, is_program_path)  # , guarded_macros_path
+    if round_id != "all":
+        combine_with_innermost_conditioned_blocks(all_directive_path, target_dir, database_dir, round_id, div_meta_dir, is_program_path)
+    
 
     # result_src = subprocess.run(["find", meta_dir, "-name", "*.json"], capture_output=True, text=True)
     # count_src = len([f for f in result_src.stdout.strip().split("\n") if f])
@@ -9447,7 +9420,7 @@ def get_is_independent(macro):
 
 
 
-# I think this information is correct, but the question is where to detect it.
+# This information is correct, but the question is where to detect it.
 def detect_independent_macros(unique_macros, independent_path):
 
     # independent/dependent determination
