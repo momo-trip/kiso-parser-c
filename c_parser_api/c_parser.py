@@ -118,13 +118,8 @@ from utils_api import (
 
 from llm_api import (
     ask_llm,
-    #RepairConfig,
-    #LLMConfig,
     LLMInterface,
     init_prompt_count, 
-    #set_exp_data,
-    #repair_test,
-    #repair_branch,
     occupy_llm,
     configure_llm,
     shutdown_llm,
@@ -286,10 +281,7 @@ def get_actual_type(arg_type, pointer_count):
     return arg_type + " " + ("*" * pointer_count)
 
 
-
-
 def get_var_type(node, libclang):
-    #kind = get_kind(node.type)
     array_dimensions = None
     pointer_count = 0
     register_type = None
@@ -308,15 +300,6 @@ def get_var_type(node, libclang):
 
     else:
         var_type = node
-
-    #initial_case_type = var_type
-    #var_type = var_type
-
-    # if libclang is True: # added # Do we need this?
-    #     user_defined_type = get_user_defined_type(node) #.type)
-    #     if user_defined_type == "typedef":
-    #         base_type = node.spelling
-    #         # var_type = base_type
 
     changed = False
     pointer = False
@@ -645,11 +628,6 @@ def write_definitions(func_json_path, process_type, update_flag, meta_dir):
 
         if meta_data is None:
             meta_data = []
-        # else:
-        #     if update_flag:
-        #         continue
-
-        #def_end_line = find_function_end(def_file_path, item['def_start_line'])
 
         # Process all items for this file path
         with open(def_file_path, 'r') as file:
@@ -732,8 +710,6 @@ def collect_includes(translation_unit, file_path):
                     include_path = os.path.normpath(os.path.join(source_dir, include_path))
                 
                 elif not is_system_include(include_path):
-                    #source_dir = os.path.dirname(include_path)
-                    #include_path = source_dir + "/" + os.path.relpath(include_path)
                     include_path = os.path.relpath(include_path)
                 else:
                     include_path = os.path.abspath(include_path)
@@ -747,10 +723,6 @@ def collect_includes(translation_unit, file_path):
                     'line': inc.location.line
                 }
                 includes.append(include_info)
-                # print(f"Found include in {file_path}:")
-                # print(f"  Include: {include_path}")
-                # print(f"  Line: {inc.location.line}")
-                # print(f"  Depth: {inc.depth}")
 
     except Exception as e:
         print(f"Error collecting includes from {file_path}: {str(e)}")
@@ -952,12 +924,10 @@ def sort_by_centrality(fixed_metric, data, graph_metrics):
 katz_alpha = 0.5
 katz_beta = 1 #100
 
-def build_graph(callee_path):  #data, callee_main_path):
+def build_graph(callee_path):
     data = read_json(callee_path)
     G = nx.DiGraph()
     
-    #related_ids = get_related_data(callee_main_path)
- 
     for func_id, func_data in data.items():
         # if func_id not in related_ids:
         #     continue
@@ -1150,9 +1120,6 @@ def build_relationship(function_metadata):
                         'is_external': True  
                     }
                 
-                # if callee_name not in name_to_ids:
-                #     name_to_ids[callee_name] = []
-                # name_to_ids[callee_name].append(callee_id)
                 if caller_id not in functions:
                     functions[caller_id] = {}
             
@@ -1182,7 +1149,6 @@ def analyze_call_relationship(meta_dir, callee_path, target_dir, is_program_path
         for file in files:
             if file.endswith('.json'):
                 file_path = os.path.join(root, file)
-                #print(file_path)
                 def_file_path = get_file_path_from_meta_path(file_path, meta_dir)
 
                 # if target_dir not in def_file_path:
@@ -1229,14 +1195,10 @@ def get_edge_weight(callee_path, callee_main_path, distance_path):
         total = 0
         count = 0
         for item in func_item['callees']:
-            #for i in range(0, len(item['path'])):
             source_file = func_item['file_path']  #"sample4.c"
             func_a_name = func_item['name']  #item['path'][i]  #"analyze_input"
             a_start_line = func_item['def_start_line'] 
             a_end_line = func_item['def_end_line'] 
-
-            # func_b_name = item['path'][i+1] #"log_message"
-            # line_number = item['call_lines'][i]  #51
 
             callee_name, callee_path, callee_line = parse_function_id(item)
             callee_list = get_call_site(callee_name, call_site_list)
@@ -1247,22 +1209,12 @@ def get_edge_weight(callee_path, callee_main_path, distance_path):
                 callee_file_path = callee_item['callee_file_path']
                 call_line = callee_item['call_line']
 
-                # print("=======")
-                # print(callee_file_path)
-                # print(func_a_name)
-                # print(callee_name)
-                # print(call_line)
-                # print("=======")
-
                 if WEIGHT is not None:
                     weight = analyze_branches_to_call(callee_file_path, func_a_name, a_start_line, a_end_line, callee_name, call_line)      
                 
                 else:
                     weight = 1
 
-                # if 'weight' not in item:
-                #     item['weight'] = []
-                # item['weight'].append(weight)
                 total += weight
                 count += 1
 
@@ -1632,10 +1584,6 @@ def get_main_info(main_path, meta_dir):
 
 
 def get_related_main(main_path, meta_dir, callee_main_path, callee_path, distance_path):
-    # target_path = target_entry['target_path']
-    # target_line = target_entry['target_line']
-    # target_function_name = target_entry['target_function']
-
     target_entry = get_main_info(main_path, meta_dir)
 
     start_line, end_line = get_bound(target_path, target_function_name, target_line)
@@ -1645,12 +1593,6 @@ def get_related_main(main_path, meta_dir, callee_main_path, callee_path, distanc
         "end_line" : end_line,
         "name" : target_function_name
     }
-
-    print(target)
-
-    # call_relations = {}
-    # call_relations, functions = get_call_relations(target_entry, meta_dir, visited=None)
-    # write_json(callee_main_path, functions)
 
     functions = []
     target_key = f"{target_function_name}@{target_path}:{start_line}"
@@ -1772,9 +1714,6 @@ def replace_comments_with_spaces_file(file_path, raw_dir):
             return content
         except (UnicodeDecodeError, UnicodeError):
             continue
-
-    # with open(file_path, 'r') as f:
-    #     content = f.readlines()
     
     tokens = tu.get_tokens(extent=tu.cursor.extent)
     comments = []
@@ -1873,28 +1812,7 @@ def find_c_files_from_compile_db(target_dir):
 
 def run_macro_finder(macro_finder, c_file, compile_db_dir, target_dir, output_handle):
     """Run macro-finder and write the results to a file"""
-    # print(f"Processing: {c_file}")
-    # Add debug information
     target_dir = Path(target_dir)
-    
-    # # Recursively search for compile_commands.json
-    # compile_db_files = list(target_dir.glob("**/compile_commands.json"))
-    
-    # if not compile_db_files:
-    #     raise FileNotFoundError(
-    #         f"compile_commands.json not found in {target_dir} or subdirectories"
-    #     )
-    
-    # # If multiple are found, use the first one (or process all)
-    # compile_db = compile_db_files[0]
-
-    # compile_db_dir = compile_db.parent
-
-    # #compile_db = target_dir / "compile_commands.json"
-    # print(f"  compile_commands.json path: {compile_db}")
-    # print(f"  compile_commands.json directory: {compile_db_dir}")
-    # print(f"  Exists: {compile_db.exists()}")
-
 
     # Build command line arguments
     #cmd = [str(macro_finder), str(c_file), "-p", str(target_dir)]
@@ -1902,16 +1820,12 @@ def run_macro_finder(macro_finder, c_file, compile_db_dir, target_dir, output_ha
 
     # Display command
     cmd_str = ' '.join(cmd)
-    #print(f"  Command: {cmd_str}")
 
-    
     output_handle.write(f"\n{'='*80}\n")
     output_handle.write(f"Processing: {c_file}\n")
     output_handle.write(f"{'='*80}\n")
     
     try:
-        #print(f"    [RUN] subprocess starting...", flush=True)
-        # added
         # ★ Redirect stderr to file to avoid deadlock
         import tempfile
         with tempfile.NamedTemporaryFile(mode='w+', suffix='.stdout', delete=True) as stdout_file, tempfile.NamedTemporaryFile(mode='w+', suffix='.stderr', delete=True) as stderr_file:
@@ -1923,8 +1837,6 @@ def run_macro_finder(macro_finder, c_file, compile_db_dir, target_dir, output_ha
                 timeout=120  # ★ Extended for large files
             )
 
-            #print(f"    [DONE] returncode={result.returncode}", flush=True)
-            
             # Read stdout from file and write
             stdout_file.seek(0)
             for line in stdout_file:
@@ -2028,35 +1940,8 @@ def convert_to_absolute_paths(compile_commands_path='compile_commands.json'):
         return False
 
 
-
 def run_finder(macro_finder, target_dir, output_file, compile_json_dir, compile_json, round_id):
-    # c_files = find_c_files(target_dir)
-
     target_dir = Path(target_dir)
-
-    # c_files = find_c_files_from_compile_json(target_dir)
-    # print(f"Found {len(c_files)} C files")
-
-    """
-    # Recursively search for compile_commands.json
-    compile_json_files = list(target_dir.glob("**/compile_commands.json"))
-    
-    if not compile_json_files:
-        raise FileNotFoundError(
-            f"compile_commands.json not found in {target_dir} or subdirectories"
-        )
-    # If multiple are found, use the first one (or process all)
-    compile_json = compile_json_files[0]
-    compile_json_dir = compile_json.parent
-
-    #compile_json = target_dir / "compile_commands.json"
-    print(f"  compile_commands.json path: {compile_json}")
-    print(f"  compile_commands.json directory: {compile_json_dir}")
-    print(f"  Exists: {compile_json.exists()}")
-    """
-
-    # with open(compile_json, 'r') as f:
-    #     compile_commands = json.load(f)
     compile_commands = read_json(compile_json)
 
     c_files = []
@@ -2156,16 +2041,8 @@ def run_finder(macro_finder, target_dir, output_file, compile_json_dir, compile_
     print(f"\nResults written to: {output_file}")
 
 
-
-# Can it detect both skipped and not skipped macros outside directives?
 def run_finder_all(macro_finder, target_dir, output_file):
-    # c_files = find_c_files(target_dir)
-
     target_dir = Path(target_dir)
-
-    # c_files = find_c_files_from_compile_db(target_dir)
-    # print(f"Found {len(c_files)} C files")
-
     
     # Recursively search for compile_commands.json
     compile_db_files = list(target_dir.glob("**/compile_commands.json"))
@@ -2218,8 +2095,6 @@ def run_finder_all(macro_finder, target_dir, output_file):
                 else:
                     fail_count += 1
                     print(f"CRASHED on: {c_file}")
-                    # Break here if you want to stop on error
-                    # break
             
             # Output summary
             summary = f"\n{'='*80}\n"
@@ -2272,8 +2147,6 @@ def put_in_target_dir(file_path, target_dir):
 
 
 
-# skipped = whether the parent block was skipped
-# evaluated = whether the block was executed: for the delete_untaken_paths function
 def save_all_directives(input_file, unordered_macros_path, macros_path, database_dir, target_dir, skipped_flag, evaluated_flag):
     """Parse macro-finder output and save to JSON (complete version based on Close information)"""
     
@@ -5668,7 +5541,6 @@ def delete_global_defs(target_dir, meta_dir, is_program_path):
     meta_files = get_all_files(meta_dir)
     for meta_path in meta_files:
         meta_data = read_json(meta_path)
-        #print(meta_path)
 
         for nema_key, item in meta_data.items():
             if 'kind' not in item:
@@ -5738,8 +5610,7 @@ def delete_global_defs(target_dir, meta_dir, is_program_path):
 
 
 
-#def delete_conditional_macro_defs(all_directive_path, target_dir):  # I feel like this will inevitably introduce some distortion, but is it okay?
-def delete_macro_defs(all_directive_path, target_dir, is_program_path):  # I feel like this will inevitably introduce some distortion, but is it okay?
+def delete_macro_defs(all_directive_path, target_dir, is_program_path): 
     print(all_directive_path)
     output_dir = "test_out"
 
@@ -6051,16 +5922,12 @@ def is_directive(use_item, macro):
 
 
 
-def get_taken_macros(taken_directive_path, gen_macro_usage_meta_path, taken_macros_path, database_dir):  #  gen_meta_path,   # , gen_macro_meta_path
+def get_taken_macros(taken_directive_path, gen_macro_usage_meta_path, taken_macros_path, database_dir):
 
-    # meta_data = convert_gen_meta(gen_meta_path) # Since macros are now separated, this may no longer be needed?
     meta_data = {}
-
-    #macro_meta_data = convert_gen_macro_meta(gen_macro_meta_path)
     macro_meta_data = {}
 
-    macro_usage_meta_data = convert_macro_usage(gen_macro_usage_meta_path) #, meta_dir)
-
+    macro_usage_meta_data = convert_macro_usage(gen_macro_usage_meta_path)
 
     # Merge taken_directive_path, meta_data, and macro_meta_data, then save to taken_macros_path
     if os.path.exists(taken_directive_path):
@@ -6074,7 +5941,7 @@ def get_taken_macros(taken_directive_path, gen_macro_usage_meta_path, taken_macr
     for macro_key, use_item in meta_data.items():
         new_uses = use_item['appearances']
 
-        if macro_key not in taken_macros: # Is this needed?
+        if macro_key not in taken_macros:
             taken_macros[macro_key] = {}
             taken_macros[macro_key]["appearances"] = []
 
@@ -6094,7 +5961,7 @@ def get_taken_macros(taken_directive_path, gen_macro_usage_meta_path, taken_macr
     for macro_key, macro_item in macro_usage_meta_data.items():
         new_uses = macro_item['appearances']
 
-        if macro_key not in taken_macros: # Is this needed?
+        if macro_key not in taken_macros:
             if "unknown" in macro_key:
                 notation = "unknown"
             elif "external" in macro_key:
@@ -6267,7 +6134,6 @@ def summarize_components(file_path, target_dir, meta_dir):
 
 
 # block_end didn't exist at this point, so it's not used here, but using it might simplify things
-# The contents of (all_macros_path, outermost_path, guards_path, target_dir) — isn't it taken_macros_path instead of all_macros_path!? No, it's all
 def get_outermost(all_directive_path, outermost_path, guards_path, target_dir, is_program_path):
     print(f"Getting outermost for {all_directive_path}")
     
@@ -6496,7 +6362,7 @@ def combine_with_outermost_conditioned_blocks(all_directive_path, outermost_path
 
         if meta_data is None:
             #return
-            meta_data = {} # Isn't this needed to add conditional blocks?
+            meta_data = {}
         
         # with open(outermost_path, 'r') as f:
         #     all_conds = json.load(f)
@@ -6627,15 +6493,10 @@ def combine_with_innermost_conditioned_blocks(all_directive_path, target_dir, da
                 if start and end and start != end:
                     non_cond_ranges.append((start, end))
         
-        # print(f"DEBUG: non_cond_ranges = {non_cond_ranges}")
-        # print(f"DEBUG: meta_data keys = {list(meta_data.keys())}")
-
-        ####
         for item in file_conds:
             block_start = item.get('block_start')
             block_end = item.get('block_end')
 
-            # Is it fully enclosed within a function, etc.?
             is_enclosed = False
             if block_start and block_end:
                 for nc_start, nc_end in non_cond_ranges:
@@ -6658,14 +6519,13 @@ def combine_with_innermost_conditioned_blocks(all_directive_path, target_dir, da
 
 
 
-def define_conditioned_blocks(file_path, target_dir, round_id, meta_dir):  # , outermost_path
+def define_conditioned_blocks(file_path, target_dir, round_id, meta_dir):
     print(f"\n---- Define conditioned blocks for {file_path} ----")
     
 
     meta_data, meta_path = obtain_metadata(file_path, meta_dir, False, None, "def")
     if meta_data is None:
-        #return
-        meta_data = {} # Isn't this needed to add conditional blocks?
+        meta_data = {}
     
     """
     with open(outermost_path, 'r') as f:
@@ -6802,7 +6662,6 @@ def define_conditioned_blocks(file_path, target_dir, round_id, meta_dir):  # , o
 
 def define_blocks(round_id, all_directive_path, guards_path, target_dir, meta_dir, div_meta_dir, database_dir):  # , raw_dir
 
-    # Is it okay to skip this? # Does it make sense to call summarize_components twice here?
     # p_f(summarize_components, target_dir, True, True, meta_dir)
 
     outermost_path = f"{database_dir}/outermost.json"
@@ -6868,7 +6727,7 @@ def insert_ifdef_statement(cfg_path, target_dir, meta_dir):
     cfg_macros = read_json(cfg_path)
     all_cfs = {}
 
-    if cfg_macros is None: # Need check. Is this true?
+    if cfg_macros is None:
         return
     
     for item in cfg_macros:
@@ -6887,27 +6746,8 @@ def insert_ifdef_statement(cfg_path, target_dir, meta_dir):
 
         for item in data:
             name_key = f"IFDEF:{file_path}:{item['start_line']}"  # {item['macro_name']}
-            #name_key = get_name_key(item)
             if name_key in meta_data:
                 meta_data[name_key]['ifdef_statement'] = True
-
-            # meta_data[name_key] = {
-            #     "kind" : "ifdef_statement",
-            #     "name": item['macro_name'],
-            #     "definition": None,
-            #     "file_path" : os.path.abspath(file_path), #file_path,
-            #     "start_line": item['start_line'],
-            #     "start_column": item['start_column'],
-            #     "end_line": item['start_line'], #item['end_line'],  # need this?
-            #     "end_column": item['start_column'], #None, # item['end_column'], # need this?
-            #     "block_start": item['start_line'],
-            #     "block_end": item['start_line'],
-            #     "rust_code": {
-            #         "file_path": None,
-            #         "start_line": None
-            #     },
-            #     "uses": [],
-            # }
 
         write_json(meta_path, meta_data)    
 
@@ -7474,13 +7314,6 @@ def parse_all(round_id, macro_finder, target_dir, meta_dir, div_meta_dir, databa
         fut_taken.result()
         fut_all.result()
 
-        """
-        # Is this even needed?
-        if macro_on is True:
-            # Insert cases where macro definitions use other code element symbols (shouldn't this be in generate_macro_metadata() instead?)
-            insert_macro_deps(macro_dep_path, target_dir, meta_dir)
-        """
-
     macros_usage_data = reform_uses_data(target_dir, macros_usage_data)
 
     # Merge usage locations from generate_macro_metadata into macros_usage_data
@@ -8007,7 +7840,6 @@ def setup_macro_without_transforming(llm_on, macro_finder, target_dir, database_
     # Insert a macro to record the initial position
     insert_target_annotation(target_dir, target_path, marker)
 
-    # Extract comments from all files once <-Is this functioning?
     target_tmp = tmp_backup_directory(target_dir)
     # p_f(replace_comments_with_spaces_file, target_dir, True, True)
 
@@ -9309,8 +9141,6 @@ def update_macro_usage_metadata(all_symbols, meta_dir, independent_path, flag_pa
                 if not os.path.isabs(file_path):
                     # <built-in>
                     # <built-in>:370:9
-                    # print(definition)
-                    # print(file_path)
                     compile_dir = os.path.abspath(compile_dir)
                     file_path = os.path.join(str(compile_dir), file_path)
 
@@ -9373,7 +9203,6 @@ def update_macro_usage_metadata(all_symbols, meta_dir, independent_path, flag_pa
                         'end_line': end_line,
                     })
 
-    # write_json(flag_path, flag_macros)  # modified
     write_json(independent_path, independent_macros)
 
     # Save metadata per file
@@ -9429,7 +9258,6 @@ def get_is_independent(macro):
     
     # uses contains something → variable (depends on other identifiers)
     return False
-
 
 
 # This information is correct, but the question is where to detect it.
@@ -9793,7 +9621,6 @@ def resolve_addresses(binary_path: str, addresses: list[str]) -> dict[str, str]:
 ##################################
 ### Tracking part
 ##################################
-
 
 def make_relative(location, base_dir):
     if location == "??" or location == "??:?":
