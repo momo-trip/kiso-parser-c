@@ -270,7 +270,7 @@ def get_param_types(node):
         
         return param_types
     except:
-        return [] #"unknown"
+        return []
 
 
 def get_actual_type(arg_type, pointer_count):
@@ -304,11 +304,11 @@ def get_var_type(node, libclang):
     changed = False
     pointer = False
 
-    if '(' in var_type: # 'FunctionProto', 
+    if '(' in var_type:
         var_type = var_type.split()[0].strip()
         changed = True
 
-    if '[' in var_type: #kind == "CONSTANTARRAY": # #if '[' in var_type:
+    if '[' in var_type:
         changed = True
         pointer = True
 
@@ -332,7 +332,7 @@ def get_var_type(node, libclang):
         changed = True
     
     if var_type.startswith('enum'): 
-        var_type = "int" #var_type[4:].strip()
+        var_type = "int"
         changed = True
 
     if 'const' in var_type:
@@ -395,7 +395,7 @@ def get_arg_type(node, libclang):
     is_restrict = False
 
     if libclang is True:
-        type_name = node.spelling #get_base_type(node.type)
+        type_name = node.spelling
         is_restrict = node.is_restrict_qualified()
     else:
         type_name = node
@@ -404,11 +404,11 @@ def get_arg_type(node, libclang):
     changed = False
     pointer = False
 
-    if '(' in type_name: # 'FunctionProto', 
+    if '(' in type_name: 
         type_name = type_name.split()[0].strip()
         changed = True
 
-    if '[' in type_name: #kind == "CONSTANTARRAY": # #if '[' in type_name:
+    if '[' in type_name:
         changed = True
         pointer = True
 
@@ -416,7 +416,6 @@ def get_arg_type(node, libclang):
         pointer_count = array_dimensions
 
         type_name = type_name.split('[')[0].strip()
-
 
     
     if '*' in type_name:
@@ -464,7 +463,7 @@ def find_actual_definition(cursor):
     if cursor.is_definition():
         return cursor
     
-    return None #cursor
+    return None
 
 
 def get_containing_function(cursor) -> Optional[str]:
@@ -637,7 +636,7 @@ def write_definitions(func_json_path, process_type, update_flag, meta_dir):
             if process_type == "function":
                 item['kind'] = "function"
                 def_start_line = item['def_start_line']
-                item['def_end_line'] = find_function_end(lines, def_start_line)  #tem['def_end_line'] = def_end_line
+                item['def_end_line'] = find_function_end(lines, def_start_line)
                 item['event'] = "definition"
 
                 item['line_cov'] = None
@@ -658,7 +657,6 @@ def write_definitions(func_json_path, process_type, update_flag, meta_dir):
                 """
             else:
                 item['kind'] = "data_type"
-                #item['def_end_line'] = def_end_line
                 item['event'] = "definition"
                 meta_data.append(item)
 
@@ -714,10 +712,10 @@ def collect_includes(translation_unit, file_path):
                 else:
                     include_path = os.path.abspath(include_path)
 
-                include_path = os.path.abspath(include_path) # added
+                include_path = os.path.abspath(include_path)
                 include_info = {
                     'source': inc.source.name,
-                    'include': include_path, #inc.include.name,
+                    'include': include_path,
                     'depth': inc.depth,
                     'is_system': is_system_include(include_path),
                     'line': inc.location.line
@@ -747,7 +745,7 @@ def search_executable(list_path, meta_dir):
     print(order)
     for file_path in order:
         meta_data, meta_path = get_metadata(file_path, meta_dir, None)
-        if meta_data is None: # added
+        if meta_data is None:
             continue
 
         for item in meta_data:
@@ -804,12 +802,12 @@ def add_indirect_include(dep_json_path):
         source = item['source']
         all_deps = find_all_dependencies(graph, source)
         direct_deps = graph[source]
-        indirect_deps = sorted(all_deps - direct_deps)  # all_deps - direct_deps
+        indirect_deps = sorted(all_deps - direct_deps)
         direct_include = item['include']
         total_set = set(direct_include).union(set(indirect_deps))
-        item['indirect_include'] = list(total_set) #list(indirect_deps)
+        item['indirect_include'] = list(total_set)
     
-    write_json(dep_json_path, data) # with open(updated_json_path, 'w') as f:
+    write_json(dep_json_path, data)
 
     
 
@@ -842,13 +840,13 @@ def analyze_function(target_dir, meta_dir, dep_json_path, build_dir, database_di
                      taken_directive_path, unordered_taken_directive_path, all_directive_path,
                      all_macros_path, taken_macros_path, guards_path, guarded_macros_path, independent_path, flag_path, const_path, cfg_path,
                      is_program_path
-                     ):  # func_json_path, prot_json_path, order_path, False
+                     ):
     
     # 1st round: parsing # If not split into multiple parts, the line numbers will change
     parse_all("call", macro_finder, target_dir, meta_dir, div_meta_dir, database_dir, build_path, 
                  taken_directive_path, unordered_taken_directive_path, all_directive_path, dep_json_path, is_program_path, 
                  all_macros_path, taken_macros_path, guards_path, guarded_macros_path, independent_path, flag_path, const_path,
-                 None, None, global_path) #given_compile_dir, given_compile_json_path) # , cfg_path
+                 None, None, global_path)
     
 
 
@@ -882,7 +880,7 @@ def get_metrics(item, graph_metrics):
         "combined_score": graph_metrics["combined_score"].get(target_function_id, 0)
     }
     
-    return result #graph_metrics["pagerank"].get(target_function_id, 0)
+    return result
 
 
 def sort_by_centrality(fixed_metric, data, graph_metrics):
@@ -918,7 +916,6 @@ def sort_by_centrality(fixed_metric, data, graph_metrics):
     sorted_data = {k: data[k] for k in sorted_keys}
     
     return sorted_data
-
 
 
 katz_alpha = 0.5
@@ -1080,7 +1077,6 @@ def build_relationship(function_metadata):
             }
             
             functions[func_id] = func_info
-            #func_id_to_info[func_id] = func_info
     
     # Step 2: Build call relationships
     for item in function_metadata:
@@ -1159,7 +1155,6 @@ def analyze_call_relationship(meta_dir, callee_path, target_dir, is_program_path
                 meta_files.append(file_path)
 
     # 1. Load metadata
-    #print(f"meta_files: {meta_files}")
     function_metadata = []
     for meta_path in meta_files:
         data = read_json(meta_path)
@@ -1186,7 +1181,7 @@ def get_edge_weight(callee_path, callee_main_path, distance_path):
 
     weight_path = 'weight.json'
     path_data = []
-    result = {} #[]
+    result = {}
     related_data = get_related_data(callee_main_path)
     for key, func_item in functions.items():
         if key not in related_data:
@@ -1195,15 +1190,13 @@ def get_edge_weight(callee_path, callee_main_path, distance_path):
         total = 0
         count = 0
         for item in func_item['callees']:
-            source_file = func_item['file_path']  #"sample4.c"
-            func_a_name = func_item['name']  #item['path'][i]  #"analyze_input"
+            source_file = func_item['file_path']
+            func_a_name = func_item['name'] 
             a_start_line = func_item['def_start_line'] 
             a_end_line = func_item['def_end_line'] 
 
             callee_name, callee_path, callee_line = parse_function_id(item)
             callee_list = get_call_site(callee_name, call_site_list)
-            #print(callee_list)
-            #name, file_path, start_line
 
             for callee_item in callee_list:
                 callee_file_path = callee_item['callee_file_path']
@@ -1228,14 +1221,9 @@ def get_edge_weight(callee_path, callee_main_path, distance_path):
                 "edge_weight" : edge_weight,
                 "path_count" : count
             }
-        #print(func_item)
-        #print(total)
-        #print(count)
+
         func_item['edge_weight'] = total / count if count != 0 else 0
         func_item['path_count'] = count
-
-    #write_json(weight_path, path_data)
-    #write_json(callee_path, functions)
 
     write_json(distance_path, result)
 
@@ -1249,23 +1237,19 @@ def get_total_weight(callee_main_path, distance_path):
     total_paths = 0
 
     for function in functions:
-        if 'all_paths' in function: # and 'edge_weight' in function:
-            #paths_count = len(function['all_paths'])  #total_weight += function['edge_weight']
-            
+        if 'all_paths' in function:
             for i in range(0, len(function['all_paths'])):
                 path_list = function['all_paths'][i]['path']
                 path_weight = get_path_weight(path_list, distance)
                 total_weight += path_weight
 
         function['total_edge_weight'] = total_weight
-        #distance[pair_id]['total_edge_weight']
     
     print(f"\nTotal weight of all {total_paths} paths: {total_weight}")
 
     write_json(callee_main_path, functions)
-    #write_json(distance_path, distance)
+    
     return total_weight
-
 
 
 def get_weighted_centrality(callee_path, callee_main_path, distance_path):
@@ -1408,11 +1392,12 @@ def write_weighted_centrality(callee_path, callee_main_path, distance_path):
     
     functions = read_json(callee_main_path)
     for item in functions:
-        func_id = item['function_id']  #"example_function@example.py"
+        func_id = item['function_id']
         node_metrics = get_node_metric(G, metrics, func_id)
         item['metrics'] = node_metrics
     
     write_json(callee_main_path, functions)
+
 
 
 def get_all_related_functions(callee_path, function_id, callee_main_path):
@@ -1431,7 +1416,7 @@ def get_all_related_functions(callee_path, function_id, callee_main_path):
         print(f"Function not found: {function_id}")
         return {"callers": [], "callees": [], "all_related": []}
     
-    forward_graph, backward_graph = _build_graph(function_data) #, callee_main_path)
+    forward_graph, backward_graph = _build_graph(function_data)
     
     result = {
         "callers": [],
@@ -1555,7 +1540,6 @@ def get_all_related_functions(callee_path, function_id, callee_main_path):
     
     write_json(f"{database_dir}/related_sum.json", result)
 
-    #os.makedirs(os.path.dirname(callee_main_path), exist_ok=True)
     with open(callee_main_path, 'w', encoding='utf-8') as f:
         json.dump(output_data['all_related'], f, indent=4, ensure_ascii=False)
     
@@ -7581,7 +7565,7 @@ def insert_target_annotation(target_dir, target_path, marker):
             target_line = file_lines[idx].rstrip('\n')  # Remove newline
             
             # Create marker (added as a comment at end of line)
-            annotation = f' /* Genifai: here is one target function!: {file_path}:{line_num}:{name} */'
+            annotation = f' /* Here is one target function: {file_path}:{line_num}:{name} */'
             new_line = target_line + annotation + '\n'
             
             file_lines[idx] = new_line
@@ -9825,8 +9809,13 @@ Need: cargo install rustfilt
 def find_binaries(workspace):
     """Search for ELF binaries in the workspace"""
     binaries = []
+    skip_suffixes = (".o", ".a", ".so")
+
     for root, dirs, files in os.walk(workspace):
         for f in files:
+            # if f.endswith(skip_suffixes):
+            #     continue
+
             path = os.path.join(root, f)
             try:
                 with open(path, "rb") as fh:
