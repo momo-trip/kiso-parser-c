@@ -1655,6 +1655,7 @@ def get_related_main(main_path, meta_dir, callee_main_path, callee_path, distanc
 ##### Translation
 #############################################
 
+# If process_function writes to the same file (e.g., appending results to a shared JSON), conflicts may occur. Writing to separate output files for each input file avoids this issue.
 def p_f(process_function, dir, c_flag, h_flag, *args):
     dir = os.path.abspath(dir)
 
@@ -1673,7 +1674,6 @@ def p_f(process_function, dir, c_flag, h_flag, *args):
         for fut in futures:
             fut.result()
 
-# If process_function writes to the same file (e.g., appending results to a shared JSON), conflicts may occur. Writing to separate output files for each input file avoids this issue.
 
 def replace_comments_with_spaces_file(file_path, raw_dir):
 
@@ -1683,9 +1683,9 @@ def replace_comments_with_spaces_file(file_path, raw_dir):
     index = Index.create()
     tu = index.parse(file_path)
     
-    #print(file_path)
     encodings = ['utf-8', 'latin-1', 'cp1252', 'iso-8859-1']
     
+    content = None
     for encoding in encodings:
         try:
             with open(file_path, 'r', encoding=encoding) as f:
@@ -1695,10 +1695,11 @@ def replace_comments_with_spaces_file(file_path, raw_dir):
                 with open(file_path, 'w', encoding='utf-8') as f:
                     f.write(content)
                 print(f"Converted {file_path} from {encoding} to UTF-8")
-            return content
+            break #return content
         except (UnicodeDecodeError, UnicodeError):
             continue
     
+    content = content.splitlines(keepends=True)
     tokens = tu.get_tokens(extent=tu.cursor.extent)
     comments = []
     
@@ -1996,8 +1997,7 @@ def run_finder(macro_finder, target_dir, output_file, compile_json_dir, compile_
                 print(f"FAILED: {result.stderr[:500]}")
                 f.write(f"ERROR: {result.stderr}\n")
             """
-                
-                        
+        
             # Output summary
             summary = f"\n{'='*80}\n"
             summary += f"SUMMARY in run_finder (batch mode) @round {round_id}\n"
@@ -2040,7 +2040,6 @@ def run_finder_all(macro_finder, target_dir, output_file):
     compile_db = compile_db_files[0]
     compile_db_dir = compile_db.parent
 
-    #compile_db = target_dir / "compile_commands.json"
     print(f"  compile_commands.json path: {compile_db}")
     print(f"  compile_commands.json directory: {compile_db_dir}")
     print(f"  Exists: {compile_db.exists()}")
@@ -3800,9 +3799,7 @@ def save_all_directives(input_file, unordered_macros_path, macros_path, database
             use["endif"] = endif_info
 
     print(f"✅ Updated {updated_count} entries with endif information")
-    #print(f"✅ Updated {updated_count} entries with endif information")
 
-    #######
     for macro_key, file_data in data["macros"].items():        
         # Merge ifdef, ifndef, if, elif
         for directive_type in ['ifdef', 'ifndef', 'if', 'elif', 'else']:
@@ -3872,7 +3869,6 @@ def divide_macros(unordered_taken_directive_path, taken_directive_path, meta_dir
     
     # Load JSON
     if not os.path.exists(unordered_taken_directive_path):
-        #print()
         return
 
     with open(unordered_taken_directive_path, 'r', encoding='utf-8') as f:
@@ -4057,401 +4053,6 @@ def insert_header_directive(custom_header_path):
     with open(custom_header_path, 'w', encoding='utf-8') as f:
         f.writelines(custom_header_lines)
     
-    #print(f"Created custom header: {custom_header_path}")
-
-
-def get_each_version_path(file_path, max_version):
-    """Return a list of versioned paths from the original file path"""
-    base, ext = os.path.splitext(file_path)
-    return [f"{base}_{i}{ext}" for i in range(1, max_version + 1)]
-
-
-def normalize_repliction_path(appearances, all_merge_maps):
-    """Normalize appearance paths using merge information"""
-    normalized = []
-    for app in appearances:
-        # app = "/path/to/feature_2.h:10:5" format
-        file_path, line, column = parse_def_loc(app)
-        
-        # If this file is a version deleted by merge, replace with merge destination
-        for original_path, merge_map in all_merge_maps.items():
-            for removed_path, keep_path in merge_map.items():
-                if file_path == removed_path:
-                    file_path = keep_path
-                    break
-        """
-        for original_path, merge_map in all_merge_maps.items():
-            base, ext = os.path.splitext(original_path)
-            for removed_v, keep_v in merge_map.items():
-                removed_path = f"{base}_{removed_v}{ext}"
-                keep_path = f"{base}_{keep_v}{ext}"
-                if file_path == removed_path:
-                    file_path = keep_path
-                    break
-        """
-        
-        normalized.append(f"{file_path}:{line}:{column}")
-    
-    return tuple(sorted(normalized))
-
-
-def rewrite_includes_for_merge(target_dir, all_merge_maps):
-    """Scan all files and rewrite #includes pointing to deleted merge versions
-    to #includes pointing to the representative version"""
-    
-    # Build a conversion table: removed path -> representative path
-    replace_map = {}  # {removed_filename: keep_filename}
-    """
-    for original_path, merge_map in all_merge_maps.items():
-        base, ext = os.path.splitext(original_path)
-        for removed_v, keep_v in merge_map.items():
-            removed_name = os.path.basename(f"{base}_{removed_v}{ext}")
-            keep_name = os.path.basename(f"{base}_{keep_v}{ext}")
-            replace_map[removed_name] = keep_name
-    """
-
-    for original_path, merge_map in all_merge_maps.items():
-        for removed_path, keep_path in merge_map.items():
-            removed_name = os.path.basename(removed_path)
-            keep_name = os.path.basename(keep_path)
-            replace_map[removed_name] = keep_name
-            
-    if not replace_map:
-        return
-    
-    # Pattern for #include lines
-    include_pattern = re.compile(r'(#\s*include\s*[""<])([^"">]+)(["">>])')
-    
-    for root, dirs, files in os.walk(target_dir):
-        for fname in files:
-            if not fname.endswith(('.h', '.c')):
-                continue
-            fpath = os.path.join(root, fname)
-            
-            with open(fpath, 'r') as f:
-                content = f.read()
-            
-            new_content = content
-            for line in content.splitlines():
-                m = include_pattern.match(line.strip())
-                if m:
-                    included_file = os.path.basename(m.group(2))
-                    if included_file in replace_map:
-                        old_path = m.group(2)
-                        new_path = old_path.replace(included_file, replace_map[included_file])
-                        new_content = new_content.replace(
-                            f"{m.group(1)}{old_path}{m.group(3)}",
-                            f"{m.group(1)}{new_path}{m.group(3)}"
-                        )
-            
-            if new_content != content:
-                with open(fpath, 'w') as f:
-                    f.write(new_content)
-                print(f"  Rewrote includes in: {fpath}")
-
-
-
-def merge_redundant_headers(include_chain, versions, target_dir, database_dir, div_meta_dir):
-    
-    all_merge_maps = {}  # Accumulate merge results
-    merged_flag = False
-
-    for file_path in include_chain:
-        max_version = versions.get(file_path, 1)
-
-        if max_version <= 1:
-            continue
-        
-        print(f"\nChecking: {file_path} ({max_version} versions)")
-
-        version_paths = get_each_version_path(file_path, max_version)
-        
-        version_signatures = {}
-        
-        for each_path in version_paths:
-            meta_data, meta_path = obtain_metadata(each_path, div_meta_dir, False, None, "def")
-            if meta_data is None: # There may be cases where no number is assigned
-                continue
-            
-            #print(meta_path)
-            sig = {}
-            for key, item in meta_data.items():
-                if 'kind' in item and "macro" in item['kind']: # == "macro":
-                    definition = item['definition']
-                    normalized_def = normalize_repliction_path(
-                        [definition],
-                        all_merge_maps
-                    )
-                    appearances = normalize_repliction_path(
-                        item.get('appearances', []),
-                        all_merge_maps
-                    )
-                    sig[item['name']] = (normalized_def[0], appearances)
-
-                if 'kind' in item and item['kind'] == "directive": 
-                    if 'definition' in item:
-                        item_file = item['file_path']
-                        item_line = item['start_line']
-                        item_column = item['start_column']
-                        #print(meta_path)
-                        definition = item['definition'] # defined_at
-
-                        normalized_def = normalize_repliction_path(
-                            [definition],
-                            all_merge_maps
-                        )
-
-                        if item_line is not None:
-                            appearances = normalize_repliction_path(
-                                [f"{item_file}:{item_line}:{item_column}"],
-                                all_merge_maps
-                            )
-                            sig[item['name']] = (normalized_def[0], appearances)
-                        
-                    else:
-                        if 'macros' not in item:
-                            continue
-
-                        for each_item in item['macros']:
-                            if 'definition' in each_item:
-                                #print(meta_path)
-                                definition = each_item['definition'] # defined_at
-                                item_file, item_line, item_column = parse_def_loc(definition)
-
-                                normalized_def = normalize_repliction_path(
-                                    [definition],
-                                    all_merge_maps
-                                )
-                                
-                                if item_line is not None:
-                                    appearances = normalize_repliction_path(
-                                        [f"{item_file}:{item_line}:{item_column}"],
-                                        all_merge_maps
-                                    )
-                                    sig[each_item['name']] = (normalized_def[0], appearances)
-                                    
-
-            version_signatures[each_path] = sig
-        
-        # Detect versions with identical signatures
-        paths = list(version_signatures.keys())
-        merge_map = {}  # {removed_version: keep_version}
-        merged = set()
-        
-        for i in range(len(paths)):
-            if paths[i] in merged:
-                continue
-            for j in range(i + 1, len(paths)):
-                if paths[j] in merged:
-                    continue
-                if version_signatures[paths[i]] == version_signatures[paths[j]]:
-                    print(f"  Redundant: {paths[j]} == {paths[i]}")
-                    merged.add(paths[j])
-                    # Extract version numbers and record in merge_map
-                    # TODO: Deletion and rewriting of parent's #include
-                    merge_map[paths[j]] = paths[i]
-        
-        if merged:
-            all_merge_maps[file_path] = merge_map
-
-    
-    write_json(f"{database_dir}/merge_maps.json", all_merge_maps)
-
-    ###
-    delete_flag = False #True #False
-    # Actual merge work
-    if all_merge_maps:
-        # Rewrite parent file's #include to the representative version
-        rewrite_includes_for_merge(target_dir, all_merge_maps)
-        
-        # Delete redundant files if the flag is enabled
-        if delete_flag:
-            delete_merged_files(target_dir, all_merge_maps)
-
-    ###
-    if all_merge_maps:
-        merged_flag = True
-
-    return merged_flag  #all_merge_maps
-
-
-
-def delete_merged_files(target_dir, all_merge_maps):
-
-    for original_path, merge_map in all_merge_maps.items():
-        base, ext = os.path.splitext(original_path)
-        for removed_v, keep_v in merge_map.items():
-            removed_path = f"{base}_{removed_v}{ext}"
-            if os.path.exists(removed_path):
-                os.remove(removed_path)
-                print(f"  Deleted: {removed_path}")
-
-
-
-def detect_conditioned_macros(taken_directive_path, output_path):
-    # Here we actually obtain the macro variable names that are purely used conditionally
-    # (this might be wrong though)
-
-    """
-    Detect macros defined inside conditional compilation.
-    If a macro definition is inside a conditional block, record all macros that set that condition.
-    """
-    print("Detecting conditioned macros...")
-    
-    #meta_dir = Path(meta_dir)
-    
-    # Phase 1: Collect all conditional blocks
-    print("Phase 1: Collecting all conditional blocks...")
-    all_conditional_blocks = []
-    
-    with open(taken_directive_path, 'r') as f:
-        data = json.load(f)
-
-    """
-    for meta_file in meta_dir.rglob("*.json"):
-        try:
-            with open(meta_file, 'r') as f:
-                data = json.load(f)
-            
-            macros = data.get('macros', [])
-    """
-    for macro_key, macro in data.items():
-        condition_macro_name = macro.get('name')
-        uses = macro.get('uses', [])
-        
-        for use in uses:
-            use_type = use.get('type')
-            if use_type not in ['IFDEF', 'IFNDEF', 'IF']:
-                continue
-            
-            use_file = use.get('file_path')
-            use_line = use.get('line')
-            use_column = use.get('column')
-            endif = use.get('endif', {})
-            endif_file = endif.get('file_path')
-            endif_line = endif.get('line')
-            endif_column = endif.get('column')
-            
-            if not (use_file and use_line and endif_file and endif_line):
-                continue
-            
-            all_conditional_blocks.append({
-                'condition_macro': condition_macro_name,  # Macro name used in the condition
-                'type': use_type,
-                'file_path': use_file,
-                'start_line': use_line,
-                'start_column': use_column,
-                'end_line': endif_line,
-                'end_column': endif_column,
-                'span': endif_line - use_line
-            })
-
-        # except Exception as e:
-        #     print(f"Error reading {meta_file} in phase 1: {e}")
-        #     continue
-    
-    print(f"Found {len(all_conditional_blocks)} conditional blocks")
-    
-    # Phase 2: Check whether each macro definition is inside a conditional block
-    print("Phase 2: Checking macro definitions...")
-    conditioned_macros = []
-    
-    for meta_file in meta_dir.rglob("*.json"):
-        try:
-            with open(meta_file, 'r') as f:
-                data = json.load(f)
-            
-            source_file = data.get('file_path')
-            macros = data.get('macros', [])
-            
-            for macro in macros:
-                name = macro.get('name')
-                definition = macro.get('definition')
-                
-                # Process only when definition is dict type (has definition location info)
-                if not isinstance(definition, dict):
-                    continue
-                
-                def_file = definition.get('file_path')
-                def_line = definition.get('line')
-                def_column = definition.get('column')
-                
-                if not (def_file and def_line):
-                    continue
-                
-                # Find all conditional blocks enclosing this definition
-                enclosing_conditions = []
-                
-                for block in all_conditional_blocks:
-                    # Check if the definition location is inside the conditional block
-                    if (def_file == block['file_path'] and
-                        block['start_line'] < def_line < block['end_line']):
-                        
-                        enclosing_conditions.append(block.copy())
-                
-                # If defined inside a conditional block
-                if enclosing_conditions:
-                    # Get the outermost conditional block (largest span)
-                    outermost = max(enclosing_conditions, key=lambda x: x['span'])
-                    
-                    # Add to the list
-                    conditioned_macros.append({
-                        'name': name,
-                        'file_path': source_file,
-                        'definition': {
-                            'file_path': def_file,
-                            'line': def_line,
-                            'column': def_column
-                        },
-                        'outermost_condition': outermost,
-                        'all_conditions': enclosing_conditions,
-                        'nesting_level': len(enclosing_conditions),
-                        'conditioning_macros': list(set([c['condition_macro'] for c in enclosing_conditions]))  # All macro names used in conditions
-                    })
-        
-        except Exception as e:
-            print(f"Error reading {meta_file} in phase 2: {e}")
-            continue
-    
-    # Save results
-    with open(output_path, 'w') as f:
-        json.dump(conditioned_macros, f, indent=4)
-    
-    print(f"\nFound {len(conditioned_macros)} conditioned macro definitions")
-    
-    # Display statistics
-    nesting_stats = defaultdict(int)
-    macro_name_counts = defaultdict(int)
-    conditioning_macro_stats = defaultdict(int)
-    
-    for macro_info in conditioned_macros:
-        nesting_stats[macro_info['nesting_level']] += 1
-        macro_name_counts[macro_info['name']] += 1
-        
-        # Statistics of macros used in conditions
-        for cond_macro in macro_info['conditioning_macros']:
-            conditioning_macro_stats[cond_macro] += 1
-    
-    print("\nNesting level statistics:")
-    for level in sorted(nesting_stats.keys()):
-        print(f"  Level {level}: {nesting_stats[level]} definitions")
-    
-    # Statistics of macros with the same name
-    duplicate_names = {name: count for name, count in macro_name_counts.items() if count > 1}
-    if duplicate_names:
-        print(f"\nFound {len(duplicate_names)} macro names with multiple definitions:")
-        for name, count in sorted(duplicate_names.items(), key=lambda x: -x[1])[:5]:
-            print(f"  {name}: {count} definitions")
-    
-    # Conditioning macro statistics
-    print(f"\nTop conditioning macros (used in conditions):")
-    for macro, count in sorted(conditioning_macro_stats.items(), key=lambda x: -x[1])[:10]:
-        print(f"  {macro}: conditions {count} definitions")
-    
-    #print(f"\nSaved to: {output_path}")
-    
-    return conditioned_macros
-
 
 def get_headers(dep_json_path, target_dir):
 
@@ -5906,12 +5507,72 @@ def is_directive(use_item, macro):
 
 
 
+def strip_line_directives_in_dir(target_dir):
+    """
+    Remove #line directives from all matching files under target_dir (recursive).
+
+    Args:
+        target_dir: Root directory to search.
+        extensions: File extensions to process (default: ('.c',)).
+                    Use ('.c', '.h') to also include headers.
+        binary_path: Path to the strip-line executable.
+        verbose: If True, print progress per file.
+
+    Returns:
+        A dict with keys:
+            'processed': list of successfully processed file paths
+            'failed':    list of (file path, error message) tuples
+            'count':     number of files successfully processed
+
+    Raises:
+        FileNotFoundError: If binary_path or target_dir does not exist.
+    """
+
+    binary_path = f"{MACRO_PARSER_HOME}/strip_line/build/stripe_line"
+
+    if not Path(binary_path).exists():
+        raise FileNotFoundError(f"strip-line binary not found: {binary_path}")
+    if not Path(target_dir).is_dir():
+        raise FileNotFoundError(f"target directory not found: {target_dir}")
+
+    processed = []
+    failed = []
+
+    # Collect target files
+    target_files = []
+    target_files = get_all_files(target_dir)
+
+    for fpath in target_files:
+        fpath_str = str(fpath)
+
+        # Run strip-line in-place
+        try:
+            result = subprocess.run(
+                [binary_path, "-i", fpath_str],
+                capture_output=True,
+                text=True,
+            )
+            if result.returncode != 0:
+                failed.append((fpath_str, result.stderr.strip()))
+                raise ValueError(f"  FAIL: {fpath_str}: {result.stderr.strip()}")
+                # continue
+
+            processed.append(fpath_str)
+            # strip-line writes "Removed N #line directives..." to stderr
+            msg = result.stderr.strip()
+            #print(f"  OK:   {fpath_str}  ({msg})")
+        except Exception as e:
+            failed.append((fpath_str, str(e)))
+            raise ValueError(f"  FAIL: {fpath_str}: {e}")
+
+
 def get_taken_macros(taken_directive_path, gen_macro_usage_meta_path, taken_macros_path, database_dir):
 
     meta_data = {}
     macro_meta_data = {}
 
     macro_usage_meta_data = convert_macro_usage(gen_macro_usage_meta_path)
+    # print(taken_directive_path)
 
     # Merge taken_directive_path, meta_data, and macro_meta_data, then save to taken_macros_path
     if os.path.exists(taken_directive_path):
@@ -5959,7 +5620,7 @@ def get_taken_macros(taken_directive_path, gen_macro_usage_meta_path, taken_macr
                 
             #taken_macros[macro_key] = {}
             #taken_macros[macro_key]["appearances"] = []
-            #"""
+
             #taken_macros[macro_key]["appearances"] = []
             #app_file, app_line, app_col = parse_def_loc(macro_item.get('definition'))
             taken_macros[macro_key] = {
@@ -5977,7 +5638,6 @@ def get_taken_macros(taken_directive_path, gen_macro_usage_meta_path, taken_macr
                 "signature": None, #macro_item.get('signature'),
                 "appearances": []
             }
-            #"""
 
         taken_macros[macro_key]['is_const'] = macro_item['is_const']
         taken_macros[macro_key]['is_independent'] = macro_item['is_independent']
@@ -6368,7 +6028,7 @@ def combine_with_outermost_conditioned_blocks(all_directive_path, outermost_path
     """ 
 
 
-def get_innermost(all_directive_path, innermost_path, target_dir, is_program_path):  # , guards_path
+def get_innermost(all_directive_path, innermost_path, target_dir, is_program_path):
     print(f"Getting innermost for {all_directive_path}")
     
     all_conds = read_json(all_directive_path)
@@ -6449,12 +6109,12 @@ def get_innermost(all_directive_path, innermost_path, target_dir, is_program_pat
     return innermost_blocks
 
 
-def combine_with_innermost_conditioned_blocks(all_directive_path, target_dir, database_dir, round_id, div_meta_dir, is_program_path):  # , guards_path
+def combine_with_innermost_conditioned_blocks(all_directive_path, target_dir, database_dir, round_id, div_meta_dir, is_program_path):
 
     print(f"\n---- Combining with innermost conditioned blocks for {target_dir} ----")
 
     innermost_path = f"{database_dir}/innermost.json"
-    all_conds = get_innermost(all_directive_path, innermost_path, target_dir, is_program_path)  # , guards_path
+    all_conds = get_innermost(all_directive_path, innermost_path, target_dir, is_program_path)
 
     for file_path, file_conds in all_conds.items():
 
@@ -6535,7 +6195,6 @@ def define_conditioned_blocks(file_path, target_dir, round_id, meta_dir):
     meta_data = merged
     """
 
-    ###
     # ✅ Addition: Pre-merge intersecting blocks (smallest start line becomes parent)
     meta_data = merge_overlapping_blocks(meta_data)
 
@@ -6543,10 +6202,8 @@ def define_conditioned_blocks(file_path, target_dir, round_id, meta_dir):
     for key, item in meta_data.items():
         if 'components' not in item:  # Skip if already merged
             item['components'] = {}
-    ### 
 
     nested_item_keys = set()
-    #"""
     # ✅ Build IntervalTree
     tree = IntervalTree()
     for key, item in meta_data.items():
@@ -6573,13 +6230,13 @@ def define_conditioned_blocks(file_path, target_dir, round_id, meta_dir):
                 continue
             
             other_start_line = other_item.get('block_start', 0)
-            other_end_line = other_item.get('block_end', other_start_line) #other_item.get('end_line', other_start_line)
+            other_end_line = other_item.get('block_end', other_start_line)
 
             # Containment check
             if start_line <= other_start_line and other_end_line <= end_line:
                 if not (start_line == other_start_line and end_line == other_end_line):
                     if other_key not in item['components']:
-                        item['components'][other_key] = copy.deepcopy(other_item) #dict(other_item)
+                        item['components'][other_key] = copy.deepcopy(other_item)
                         nested_item_keys.add(other_key)
                     
                     # Merge uses
@@ -6589,7 +6246,6 @@ def define_conditioned_blocks(file_path, target_dir, round_id, meta_dir):
                             uses_dict[other_use_name] = other_use
 
         item['uses'] = list(uses_dict.values())
-    #"""
 
     """
     # ✅ Fast containment search for each item
@@ -6635,7 +6291,7 @@ def define_conditioned_blocks(file_path, target_dir, round_id, meta_dir):
         sorted(top_level_items.items(), key=lambda x: x[1].get('block_start', 0))
     )
 
-    write_json(meta_path, sorted_top_level_items) #top_level_items)
+    write_json(meta_path, sorted_top_level_items)
     
     # print(f"Total items: {len(meta_data)}")
     # print(f"Nested items: {len(nested_item_keys)}")
@@ -6644,20 +6300,18 @@ def define_conditioned_blocks(file_path, target_dir, round_id, meta_dir):
     return len(nested_item_keys)
 
 
-def define_blocks(round_id, all_directive_path, guards_path, target_dir, meta_dir, div_meta_dir, database_dir):  # , raw_dir
-
-    # p_f(summarize_components, target_dir, True, True, meta_dir)
+def define_blocks(round_id, all_directive_path, guards_path, target_dir, meta_dir, div_meta_dir, database_dir):
 
     outermost_path = f"{database_dir}/outermost.json"
-    #p_f(combine_with_outermost_conditioned_blocks, target_dir, True, True, round_id, all_conds, meta_dir)
-    combine_with_outermost_conditioned_blocks(all_directive_path, outermost_path, guards_path, target_dir, round_id, meta_dir, is_program_path) # True, True, 
+    
+    combine_with_outermost_conditioned_blocks(all_directive_path, outermost_path, guards_path, target_dir, round_id, meta_dir, is_program_path) # p_f(summarize_components, target_dir, True, True, meta_dir)
 
     if round_id == "3":
         # Metadata should be stored separately for non-grouped and parallel ones.
         parent = os.path.dirname(div_meta_dir)
         copy_directory(meta_dir, parent)
 
-    p_f(define_conditioned_blocks, target_dir, True, True, round_id, meta_dir) # # , all_macro_path dep_json_path # blocks.py, # analyze_blocks
+    p_f(define_conditioned_blocks, target_dir, True, True, round_id, meta_dir)
 
 
 
@@ -7155,11 +6809,81 @@ def detect_global_vars(target_dir, meta_dir, global_path, is_program_path):
     return globals_list
 
 
+def make_all_files_read_only(target_dir):
+    """
+    Recursively make all files under target_dir read-only.
 
-def parse_all(round_id, macro_finder, target_dir, meta_dir, div_meta_dir, database_dir, build_path,  # , output_file 
+    Removes write permission for owner, group, and others on every regular
+    file beneath target_dir. Directories themselves are left untouched so
+    that the build can still create new object files, etc.
+
+    Args:
+        target_dir: Root directory to traverse.
+
+    Returns:
+        Number of files whose permissions were changed.
+
+    Raises:
+        FileNotFoundError: If target_dir does not exist.
+    """
+    root = Path(target_dir)
+    if not root.is_dir():
+        raise FileNotFoundError(f"target directory not found: {target_dir}")
+
+    write_mask = ~(stat.S_IWUSR | stat.S_IWGRP | stat.S_IWOTH)
+    count = 0
+
+    for path in root.rglob("*"):
+        if path.is_file():
+            current_mode = path.stat().st_mode
+            new_mode = current_mode & write_mask
+            if new_mode != current_mode:
+                path.chmod(new_mode)
+                count += 1
+
+    print(f"Made {count} files read-only under {target_dir}")
+    return count
+
+
+
+def make_all_files_writable(target_dir):
+    """
+    Recursively restore owner write permission for all files under target_dir.
+
+    Adds the owner write bit (S_IWUSR) back to every regular file beneath
+    target_dir. This reverses the effect of make_all_files_read_only().
+
+    Args:
+        target_dir: Root directory to traverse.
+
+    Returns:
+        Number of files whose permissions were changed.
+
+    Raises:
+        FileNotFoundError: If target_dir does not exist.
+    """
+    root = Path(target_dir)
+    if not root.is_dir():
+        raise FileNotFoundError(f"target directory not found: {target_dir}")
+
+    count = 0
+
+    for path in root.rglob("*"):
+        if path.is_file():
+            current_mode = path.stat().st_mode
+            new_mode = current_mode | stat.S_IWUSR
+            if new_mode != current_mode:
+                path.chmod(new_mode)
+                count += 1
+
+    print(f"Restored write permission on {count} files under {target_dir}")
+    return count
+
+
+def parse_all(round_id, macro_finder, target_dir, meta_dir, div_meta_dir, database_dir, build_path, 
                  taken_directive_path, unordered_taken_directive_path, all_directive_path, dep_json_path, is_program_path,  # unordered_taken_directive_path, 
                  all_macros_path, taken_macros_path, guards_path, guarded_macros_path, independent_path, flag_path, const_path,
-                 given_compile_dir, given_compile_json_path, global_path): # , cfg_path
+                 given_compile_dir, given_compile_json_path, global_path):
     
     output_file = f"{database_dir}/macro_finder_results.txt"
     
@@ -7169,7 +6893,7 @@ def parse_all(round_id, macro_finder, target_dir, meta_dir, div_meta_dir, databa
     if round_id in ["1"]: #["1", "2"]:
         option = "init"
     else:
-        option = "build" #"both"
+        option = "build"
     
     if round_id == "call":
         option = ""
@@ -7182,13 +6906,39 @@ def parse_all(round_id, macro_finder, target_dir, meta_dir, div_meta_dir, databa
         given_compie_dir = find_compile_commands_json(target_dir)
         copy_file(given_compile_json_path, f"{database_dir}")
 
-
     error_output, std_output = run_script_wo_log(build_path, 10000, True, None, option)
     if error_output is not None:
         raise ValueError(f"Faild to run {build_path} at round {round_id}")
-    
-    check_permission(target_dir)
 
+    if round_id == "1":
+        compile_dir, compile_json_path = get_compile_json(target_dir)
+
+        # Stash the compile_commands.json before modifying sources.
+        # The next build (after strip_line) would only record the rebuilt
+        # files and overwrite the complete record, so we save it now.
+        stash_path = str(compile_json_path) + ".stash"
+        shutil.copy2(compile_json_path, stash_path)
+
+        strip_line_directives_in_dir(target_dir)
+        
+        try:
+            strip_line_directives_in_dir(target_dir)
+            # print(target_dir)
+            make_all_files_read_only(target_dir)
+
+            error_output, std_output = run_script_wo_log(build_path, 10000, True, None, option)
+            if error_output is not None:
+                raise ValueError(f"Faild to run {build_path} at round {round_id}")
+            
+        finally:
+            make_all_files_writable(target_dir)
+
+            # Restore the original compile_commands.json (with full file list)
+            shutil.copy2(stash_path, compile_json_path)
+            Path(stash_path).unlink()
+
+
+    check_permission(target_dir)
     compile_dir, compile_json_path = get_compile_json(target_dir)
     # print(target_dir)
     # print(compile_json_path)
@@ -7222,20 +6972,18 @@ def parse_all(round_id, macro_finder, target_dir, meta_dir, div_meta_dir, databa
             raise ValueError("Did not find compile_commands.json")
 
     # Append with the current compile_commands.json
-    # print(database_dir)
-
     append_compile_json_path(compile_json_path, database_dir)
 
     with ProcessPoolExecutor(max_workers=4) as pool:
 
         # ---- Step : find_headers || run_finder ----
         futures = {}
-        if round_id in ["call", "1", "2", "3", "all"]: # , "all" #, "2", "3"]:
+        if round_id in ["call", "1", "2", "3", "all"]:
             compile_log_path = f'{database_dir}/compile.log'
             build_dir = find_compile_commands_json(target_dir)
             #analyze_dependencies(target_dir, dep_json_path, build_path, compile_log_path, build_dir, database_dir)
             futures["find_headers"] = pool.submit(find_headers, target_dir, database_dir, dep_json_path, compile_dir, compile_json_path, round_id)
-            
+
             # Wait for find_headers to complete
             if "find_headers" in futures:
                 futures["find_headers"].result()
@@ -7261,12 +7009,10 @@ def parse_all(round_id, macro_finder, target_dir, meta_dir, div_meta_dir, databa
         # Preprocessor is a different language so retrieve separately and write to meta_dir: holds pre-expansion info but depends on post-expansion syntax (has the concept of definitions)
         fut_macro_usage = pool.submit(generate_macro_usage_metadata, target_dir, meta_dir, database_dir, independent_path, flag_path, compile_dir, compile_json_path, round_id)
         
-        #"""
         gen_macro_meta_path = Path(database_dir) / "meta_macro.json"
         # Insert cases where macro definitions use other code element symbols
         # if round_id in ["call", "all", "4"]:
         #     fut_macro_meta = pool.submit(generate_macro_metadata, target_dir, meta_dir, database_dir, independent_path, compile_dir, compile_json_path) #, independent_path)
-        # #"""
 
         fut_macro_meta = pool.submit(generate_macro_metadata, target_dir, meta_dir, database_dir, independent_path, compile_dir, compile_json_path, round_id) #, independent_path)
 
@@ -7793,10 +7539,10 @@ def merge_ranges(ranges):
 
 
 def setup_macro_without_transforming(llm_on, macro_finder, target_dir, database_dir, meta_dir, div_meta_dir, build_path, cfg_path, target_path, marker,  
-                            list_path, dep_json_path, custom_headers_dir, custom_json_path, custom_header_path, # c_run_path, call_path, # picked_path, macro_list_path, macro_path, all_macro_path, # classified_path, build_rs_path, # defined_path, undefined_path, cmd_line_path, 
+                            list_path, dep_json_path, custom_headers_dir, custom_json_path, custom_header_path,
                             llm_choice, llm_instance, token_path, chat_dir, all_macros_path, taken_macros_path, 
                             all_directive_path, taken_directive_path, is_program_path, global_path,
-                            guards_path, guarded_macros_path, independent_path, flag_path, const_path, conflict_path  # , sys_macros_path
+                            guards_path, guarded_macros_path, independent_path, flag_path, const_path, conflict_path 
                             ):
     
     print("Setting up conditional macros ...")
@@ -7816,14 +7562,9 @@ def setup_macro_without_transforming(llm_on, macro_finder, target_dir, database_
     if_path = f"{database_dir}/if_macros.json"
     macro_func_path = f"{database_dir}/macro_func.json"
 
-    # conditioned_path = f"{database_dir}/conditioned_macros.json"
-    print(target_dir)
     output_dir = target_dir #output_dir = f"test_out" #output_dir = target_dir # Production
-    #recreate_directory(output_dir)
 
-    # Insert a macro to record the initial position
-    insert_target_annotation(target_dir, target_path, marker)
-
+    # get a backup
     target_tmp = tmp_backup_directory(target_dir)
     # p_f(replace_comments_with_spaces_file, target_dir, True, True)
 
