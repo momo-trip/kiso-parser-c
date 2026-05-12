@@ -7,6 +7,7 @@
 #include "clang/Lex/PPCallbacks.h"
 #include "clang/Lex/Preprocessor.h"
 #include "clang/Lex/MacroInfo.h"
+#include "clang/Lex/MacroArgs.h"
 #include "clang/Basic/FileEntry.h"
 #include "llvm/ADT/SmallVector.h"
 #include "clang/AST/RecursiveASTVisitor.h"
@@ -16,6 +17,7 @@
 #include <set>
 #include <vector>
 #include <mutex>
+#include <cctype>
 
 #if __cplusplus >= 201703L && __has_include(<filesystem>)
     #include <filesystem>
@@ -38,9 +40,9 @@ static const std::vector<std::string> DEFAULT_INCLUDE_PATHS = {
     "-Wno-incompatible-function-pointer-types", 
     "-Wno-incompatible-pointer-types",
     // "-isystem/usr/include/c++/11",
-    // "-isystem/usr/include/x86_64-linux-gnu/c++/11",
+    // "-isystem/usr/include/aarch64-linux-gnu/c++/11",
     // "-isystem/usr/include/c++/11/backward",
-    "-isystem/usr/include/x86_64-linux-gnu",
+    "-isystem/usr/include/aarch64-linux-gnu",
     "-isystem/usr/include",
     "-fno-strict-aliasing",
 };
@@ -56,6 +58,7 @@ struct UseInfo {
     std::string file_path;
     bool pending_ast_resolve = false;
     unsigned expansion_raw_loc = 0;
+    std::string paste_expression;
 
     bool operator==(const UseInfo &o) const {
         return name == o.name && definition == o.definition;
@@ -425,6 +428,8 @@ public:
         if (defIt == macroDefByLocation.end()) return;
         const MacroDefInfo &defInfo = defIt->second;
 
+        // added for ##
+
         // ---- Scan body tokens to build uses ----
         std::vector<UseInfo> uses;
 
@@ -434,17 +439,100 @@ public:
                 if (Param) paramNames.insert(Param->getName().str());
         }
 
-        for (const Token &Tok : MI->tokens()) {
-            if (!Tok.is(tok::identifier)) continue;
-            const IdentifierInfo *TokII = Tok.getIdentifierInfo();
-            if (!TokII) continue;
+        // [ADD] Build argument spelling map for ## paste resolution
+        //       (unexpanded args - ## suppresses macro expansion of operands)
+        std::map<std::string, std::string> argSpellings;
+        if (MI->isFunctionLike() && Args) {
+            unsigned i = 0;
+            for (const IdentifierInfo *Param : MI->params()) {
+                if (Param) {
+                    const Token *argToks = Args->getUnexpArgument(i);
+                    unsigned numToks = Args->getArgLength(argToks);
+                    std::string spelling;
+                    for (unsigned k = 0; k < numToks; ++k) {
+                        if (argToks[k].is(tok::eof)) break;
+                        spelling += PP.getSpelling(argToks[k]);
+                    }
+                    argSpellings[Param->getName().str()] = spelling;
+                }
+                ++i;
+            }
+        }
 
-            std::string tokenName = TokII->getName().str();
-            if (paramNames.count(tokenName)) continue;
+        // [ADD] Helper: check if a string is a valid C identifier
+        auto isValidIdentifier = [](const std::string &s) -> bool {
+            if (s.empty()) return false;
+            if (!std::isalpha(static_cast<unsigned char>(s[0])) && s[0] != '_') return false;
+            for (char c : s) {
+                if (!std::isalnum(static_cast<unsigned char>(c)) && c != '_') return false;
+            }
+            return true;
+        };
 
+        // [ADD] Pre-scan to find which token indices are part of a ## chain,
+        //       and compute the leftmost-operand index of each chain.
+        //       pasteLeftOf[idx] = leftmost index of the chain containing this token,
+        //                          or SIZE_MAX if not part of any chain.
+        const auto &TokList = MI->tokens();
+        std::vector<size_t> pasteLeftOf(TokList.size(), SIZE_MAX);
+        std::map<size_t, std::pair<std::string, std::string>> pasteResults;
+        // pasteResults[leftmost] = (concatenated_name, raw_paste_expr)
+
+        for (size_t idx = 0; idx + 2 < TokList.size(); ++idx) {
+            if (!TokList[idx + 1].is(tok::hashhash)) continue;
+
+            // Only process from the leftmost token of the chain
+            size_t left = idx;
+            while (left >= 2 && TokList[left - 1].is(tok::hashhash)) {
+                left -= 2;
+            }
+            if (left != idx) continue;
+
+            size_t right = idx + 2;
+            while (right + 2 < TokList.size() && TokList[right + 1].is(tok::hashhash)) {
+                right += 2;
+            }
+
+            // Build concatenated name (with arg substitution) and raw expression
+            std::string concatenated;
+            std::string pasteExprText;
+            for (size_t k = left; k <= right; ++k) {
+                if (TokList[k].is(tok::hashhash)) {
+                    pasteExprText += "##";
+                    continue;
+                }
+                std::string nm;
+                if (TokList[k].is(tok::identifier) && TokList[k].getIdentifierInfo()) {
+                    nm = TokList[k].getIdentifierInfo()->getName().str();
+                    pasteExprText += nm;
+                } else {
+                    nm = PP.getSpelling(TokList[k]);
+                    pasteExprText += nm;
+                }
+                // Operand spots only (even indices from left)
+                if ((k - left) % 2 == 0) {
+                    auto it = argSpellings.find(nm);
+                    concatenated += (it != argSpellings.end()) ? it->second : nm;
+                }
+            }
+
+            if (!isValidIdentifier(concatenated)) continue;
+
+            pasteResults[left] = {concatenated, pasteExprText};
+            for (size_t k = left; k <= right; ++k) {
+                pasteLeftOf[k] = left;
+            }
+        }
+
+        // [MODIFIED] Helper to add a UseInfo with macro/pending resolution
+        //            (factored out to reuse for both plain identifiers and paste results)
+        auto addUse = [&](const std::string &tokenName,
+                          SourceLocation usageLoc,
+                          const std::string &pasteExpr) {
             UseInfo ui;
             ui.name = tokenName;
-            ui.usage_location = Analyzer.getOriginalLocationString(Tok.getLocation());
+            ui.usage_location = Analyzer.getOriginalLocationString(usageLoc);
+            ui.paste_expression = pasteExpr;
 
             // Attempt to resolve as a macro
             IdentifierInfo *RefII = PP.getIdentifierInfo(tokenName);
@@ -455,13 +543,11 @@ public:
                     SourceLocation RefDefLoc = RefMI->getDefinitionLoc();
                     std::string refDef = Analyzer.getOriginalLocationString(RefDefLoc);
 
-                    // Definition points to itself → defer to AST resolution
                     if (refDef == defLocation) {
                         ui.kind = "pending";
                         ui.definition = "pending";
                         ui.pending_ast_resolve = true;
                         ui.expansion_raw_loc = expansionRawLoc;
-
                         pendingASTResolves.push_back({
                             macroName, defLocation, tokenName,
                             ui.usage_location, expansionRawLoc, useLocation
@@ -475,9 +561,8 @@ public:
                         ui.start_line = sl.isValid() ? sl.getLine() : 0;
                         ui.end_line = el.isValid() ? el.getLine() : 0;
                     }
-
                     uses.push_back(ui);
-                    continue;
+                    return;
                 }
             }
 
@@ -491,9 +576,104 @@ public:
                 macroName, defLocation, tokenName,
                 ui.usage_location, expansionRawLoc, useLocation
             });
-
             uses.push_back(ui);
+        };
+
+        // [MODIFIED] Main scan loop: handle ## chains and plain identifiers
+        for (size_t idx = 0; idx < TokList.size(); ++idx) {
+            const Token &Tok = TokList[idx];
+
+            // [ADD] If this token starts a ## chain, emit one paste use and skip
+            if (pasteLeftOf[idx] == idx) {
+                const auto &pr = pasteResults[idx];
+                addUse(pr.first, Tok.getLocation(), pr.second);
+                continue;
+            }
+            // [ADD] Skip middle/right operands of a ## chain (already emitted)
+            if (pasteLeftOf[idx] != SIZE_MAX) continue;
+
+            // Existing logic: plain identifier
+            if (!Tok.is(tok::identifier)) continue;
+            const IdentifierInfo *TokII = Tok.getIdentifierInfo();
+            if (!TokII) continue;
+
+            std::string tokenName = TokII->getName().str();
+            if (paramNames.count(tokenName)) continue;
+
+            addUse(tokenName, Tok.getLocation(), "");
         }
+
+        // // ---- Scan body tokens to build uses ----
+        // std::vector<UseInfo> uses;
+
+        // std::set<std::string> paramNames;
+        // if (MI->isFunctionLike()) {
+        //     for (const IdentifierInfo *Param : MI->params())
+        //         if (Param) paramNames.insert(Param->getName().str());
+        // }
+
+        // for (const Token &Tok : MI->tokens()) {
+        //     if (!Tok.is(tok::identifier)) continue;
+        //     const IdentifierInfo *TokII = Tok.getIdentifierInfo();
+        //     if (!TokII) continue;
+
+        //     std::string tokenName = TokII->getName().str();
+        //     if (paramNames.count(tokenName)) continue;
+
+        //     UseInfo ui;
+        //     ui.name = tokenName;
+        //     ui.usage_location = Analyzer.getOriginalLocationString(Tok.getLocation());
+
+        //     // Attempt to resolve as a macro
+        //     IdentifierInfo *RefII = PP.getIdentifierInfo(tokenName);
+        //     if (RefII && RefII->hasMacroDefinition()) {
+        //         MacroDefinition RefMD = PP.getMacroDefinition(RefII);
+        //         if (RefMD && RefMD.getMacroInfo()) {
+        //             const MacroInfo *RefMI = RefMD.getMacroInfo();
+        //             SourceLocation RefDefLoc = RefMI->getDefinitionLoc();
+        //             std::string refDef = Analyzer.getOriginalLocationString(RefDefLoc);
+
+        //             // Definition points to itself → defer to AST resolution
+        //             if (refDef == defLocation) {
+        //                 ui.kind = "pending";
+        //                 ui.definition = "pending";
+        //                 ui.pending_ast_resolve = true;
+        //                 ui.expansion_raw_loc = expansionRawLoc;
+
+        //                 pendingASTResolves.push_back({
+        //                     macroName, defLocation, tokenName,
+        //                     ui.usage_location, expansionRawLoc, useLocation
+        //                 });
+        //             } else {
+        //                 ui.kind = RefMI->isFunctionLike() ? "macro_function" : "macro";
+        //                 ui.definition = refDef;
+        //                 ui.file_path = Analyzer.getFilePath(RefDefLoc);
+        //                 PresumedLoc sl = Analyzer.SM->getPresumedLoc(RefDefLoc);
+        //                 PresumedLoc el = Analyzer.SM->getPresumedLoc(RefMI->getDefinitionEndLoc());
+        //                 ui.start_line = sl.isValid() ? sl.getLine() : 0;
+        //                 ui.end_line = el.isValid() ? el.getLine() : 0;
+        //             }
+
+        //             uses.push_back(ui);
+        //             continue;
+        //         }
+        //     }
+
+        //     // Not a macro → defer to AST resolution
+        //     ui.kind = "pending";
+        //     ui.definition = "pending";
+        //     ui.pending_ast_resolve = true;
+        //     ui.expansion_raw_loc = expansionRawLoc;
+
+        //     pendingASTResolves.push_back({
+        //         macroName, defLocation, tokenName,
+        //         ui.usage_location, expansionRawLoc, useLocation
+        //     });
+
+        //     uses.push_back(ui);
+        // }
+
+        // ended for ##
 
         // Build the key from the uses pattern
         UsesPattern pattern;
@@ -556,6 +736,7 @@ public:
 };
 
 // ---- AST Visitor: Resolve pending token definitions via DeclRefExpr ----
+// ---- AST Visitor: Resolve pending token definitions via DeclRefExpr and Decls ----
 class PendingResolveVisitor : public RecursiveASTVisitor<PendingResolveVisitor> {
     ASTContext &Context;
     SourceManager &SM;
@@ -568,6 +749,26 @@ public:
         std::map<std::pair<unsigned, std::string>, std::pair<std::string, const NamedDecl*>> &R)
         : Context(Ctx), SM(Ctx.getSourceManager()), Analyzer(A), Resolved(R) {}
 
+    // [ADD] Common helper: register a NamedDecl whose name location is inside a macro expansion
+    void tryRegisterDecl(const NamedDecl *ND) {
+        if (!ND) return;
+        SourceLocation Loc = ND->getLocation();
+        if (!Loc.isMacroID()) return;
+
+        std::string tokenName = ND->getNameAsString();
+        if (tokenName.empty()) return;
+
+        SourceLocation ExpLoc = SM.getExpansionLoc(Loc);
+        unsigned rawLoc = ExpLoc.getRawEncoding();
+
+        auto key = std::make_pair(rawLoc, tokenName);
+        if (Resolved.find(key) != Resolved.end()) return;  // first-wins, do not overwrite
+
+        std::string declLocStr = Analyzer.getOriginalLocationString(Loc);
+        Resolved[key] = {declLocStr, ND};
+    }
+
+    // [KEEP] Existing handler: identifier references
     bool VisitDeclRefExpr(DeclRefExpr *DRE) {
         SourceLocation Loc = DRE->getLocation();
         if (!Loc.isMacroID()) return true;
@@ -586,10 +787,76 @@ public:
             std::string declLocStr = Analyzer.getOriginalLocationString(DeclLoc);
             Resolved[key] = {declLocStr, ND};
         }
+        return true;
+    }
 
+    // [ADD] Declaration handlers: catch names introduced by ## paste or other macro expansions
+    bool VisitFunctionDecl(FunctionDecl *FD) {
+        tryRegisterDecl(FD);
+        return true;
+    }
+
+    bool VisitVarDecl(VarDecl *VD) {
+        tryRegisterDecl(VD);
+        return true;
+    }
+
+    bool VisitTypedefNameDecl(TypedefNameDecl *TD) {
+        tryRegisterDecl(TD);
+        return true;
+    }
+
+    bool VisitTagDecl(TagDecl *TD) {
+        tryRegisterDecl(TD);
+        return true;
+    }
+
+    bool VisitEnumConstantDecl(EnumConstantDecl *ECD) {
+        tryRegisterDecl(ECD);
+        return true;
+    }
+
+    bool VisitFieldDecl(FieldDecl *FD) {
+        tryRegisterDecl(FD);
         return true;
     }
 };
+
+
+// class PendingResolveVisitor : public RecursiveASTVisitor<PendingResolveVisitor> {
+//     ASTContext &Context;
+//     SourceManager &SM;
+//     MacroAnalyzer &Analyzer;
+//     std::map<std::pair<unsigned, std::string>, std::pair<std::string, const NamedDecl*>> &Resolved;
+
+// public:
+//     PendingResolveVisitor(
+//         ASTContext &Ctx, MacroAnalyzer &A,
+//         std::map<std::pair<unsigned, std::string>, std::pair<std::string, const NamedDecl*>> &R)
+//         : Context(Ctx), SM(Ctx.getSourceManager()), Analyzer(A), Resolved(R) {}
+
+//     bool VisitDeclRefExpr(DeclRefExpr *DRE) {
+//         SourceLocation Loc = DRE->getLocation();
+//         if (!Loc.isMacroID()) return true;
+
+//         SourceLocation ExpLoc = SM.getExpansionLoc(Loc);
+//         unsigned rawLoc = ExpLoc.getRawEncoding();
+
+//         const NamedDecl *ND = DRE->getDecl();
+//         if (!ND) return true;
+
+//         std::string tokenName = ND->getNameAsString();
+//         auto key = std::make_pair(rawLoc, tokenName);
+
+//         if (Resolved.find(key) == Resolved.end()) {
+//             SourceLocation DeclLoc = ND->getLocation();
+//             std::string declLocStr = Analyzer.getOriginalLocationString(DeclLoc);
+//             Resolved[key] = {declLocStr, ND};
+//         }
+
+//         return true;
+//     }
+// };
 
 
 class MacroConstEvalVisitor 
@@ -940,6 +1207,10 @@ void printMacrosAsJSON() {
             std::cout << "        {\n";
             std::cout << "          \"kind\": \"" << escapeJSON(ui.kind) << "\",\n";
             std::cout << "          \"name\": \"" << escapeJSON(ui.name) << "\",\n";
+            if (!ui.paste_expression.empty()) {
+                std::cout << "          \"paste_expression\": \""
+                          << escapeJSON(ui.paste_expression) << "\",\n";
+            }
             std::cout << "          \"usage_location\": \"" << escapeJSON(ui.usage_location) << "\",\n";
             std::cout << "          \"definition\": \"" << escapeJSON(ui.definition) << "\",\n";
             std::cout << "          \"start_line\": " << ui.start_line << ",\n";
@@ -948,6 +1219,22 @@ void printMacrosAsJSON() {
             std::cout << "        }";
         }
         std::cout << "\n      ]\n";
+        // std::cout << "      \"uses\": [\n";
+        // bool firstUse = true;
+        // for (const auto &ui : info.uses) {
+        //     if (!firstUse) std::cout << ",\n";
+        //     firstUse = false;
+        //     std::cout << "        {\n";
+        //     std::cout << "          \"kind\": \"" << escapeJSON(ui.kind) << "\",\n";
+        //     std::cout << "          \"name\": \"" << escapeJSON(ui.name) << "\",\n";
+        //     std::cout << "          \"usage_location\": \"" << escapeJSON(ui.usage_location) << "\",\n";
+        //     std::cout << "          \"definition\": \"" << escapeJSON(ui.definition) << "\",\n";
+        //     std::cout << "          \"start_line\": " << ui.start_line << ",\n";
+        //     std::cout << "          \"end_line\": " << ui.end_line << ",\n";
+        //     std::cout << "          \"file_path\": \"" << escapeJSON(ui.file_path) << "\"\n";
+        //     std::cout << "        }";
+        // }
+        // std::cout << "\n      ]\n";
         
         std::cout << "    }";
     }
@@ -976,13 +1263,13 @@ void addCustomIncludePaths(ClangTool &Tool) {
 
           std::vector<std::string> CxxArgs = {
             "-isystem/usr/include/c++/11",
-            "-isystem/usr/include/x86_64-linux-gnu/c++/11",
+            "-isystem/usr/include/aarch64-linux-gnu/c++/11",
             "-isystem/usr/include/c++/11/backward",
           };
           CommonArgs.insert(CommonArgs.end(), CxxArgs.begin(), CxxArgs.end());
         }
   
-        CommonArgs.push_back("-isystem/usr/include/x86_64-linux-gnu");
+        CommonArgs.push_back("-isystem/usr/include/aarch64-linux-gnu");
         CommonArgs.push_back("-isystem/usr/include");
   
         NewArgs.insert(NewArgs.begin() + 1, CommonArgs.begin(), CommonArgs.end());

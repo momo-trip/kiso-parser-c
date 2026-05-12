@@ -69,6 +69,7 @@ from multiprocessing import cpu_count
 import threading
 from pathlib import Path
 from collections import OrderedDict
+import ijson
 
 from clang.cindex import (
     Index, 
@@ -742,7 +743,7 @@ def search_executable(list_path, meta_dir):
     main_list = [] 
     order = get_files_list(list_path)
 
-    print(order)
+    # print(order)
     for file_path in order:
         meta_data, meta_path = get_metadata(file_path, meta_dir, None)
         if meta_data is None:
@@ -1581,7 +1582,7 @@ def get_related_main(main_path, meta_dir, callee_main_path, callee_path, distanc
     functions = []
     target_key = f"{target_function_name}@{target_path}:{start_line}"
     get_all_related_functions(callee_path, target_key, callee_main_path)
-    print(callee_main_path)
+    # print(callee_main_path)
 
     call_graph = read_json(callee_path)
     functions = read_json(callee_main_path)
@@ -1666,7 +1667,8 @@ def p_f(process_function, dir, c_flag, h_flag, *args):
             full_path = os.path.join(root, file)
             files_to_process.append(full_path)
 
-    with ProcessPoolExecutor() as pool:
+    # with ProcessPoolExecutor() as pool:
+    with ThreadPoolExecutor() as pool:
         futures = {
             pool.submit(process_function, fp, dir, *args): fp
             for fp in files_to_process
@@ -5410,11 +5412,25 @@ def convert_macro_usage(gen_meta_path):
             # if 'start_line' not in item:
             #     print(item)
             
-            use_file_path, use_line, use_colum = parse_def_loc(item)
-            taken_macros[macro_key]['appearances'].append({
+            paste_expression = None
+            parts = item.rsplit(":", 3) #2)
+            if len(parts) >= 3:
+                use_file_path = parts[0]
+                use_line = int(parts[1])
+                use_colum = int(parts[2])
+
+                if len(parts) >= 4:
+                    paste_expression = parts[3]
+
+            # use_file_path, use_line, use_colum = parse_def_loc(item)
+            use_item = {
                 "file_path" : use_file_path, #entry['file_path'],  # Using entry here seems to be a key detail
                 "start_line" : use_line, #item['start_line'],
-            })
+            }
+            if paste_expression is not None:
+                use_item['paste_expression'] = paste_expression
+
+            taken_macros[macro_key]['appearances'].append(use_item)
 
     return taken_macros 
     
@@ -5482,7 +5498,6 @@ def is_duplicate_use(new_use, existing_uses):
 def parse_definition_from_key(macro_key):
     parts = macro_key.split(":")
 
-    #print(parts)
     if len(parts) >= 4:
         file_path = ":".join(parts[1:-2]) 
         line = int(parts[-2])
@@ -5537,10 +5552,13 @@ def strip_line_directives_in_dir(target_dir):
 
     processed = []
     failed = []
+    extensions=('.c', '.h')
 
     # Collect target files
     target_files = []
     target_files = get_all_files(target_dir)
+    target_files = [f for f in target_files
+                    if str(f).endswith(extensions)]
 
     for fpath in target_files:
         fpath_str = str(fpath)
@@ -5570,9 +5588,7 @@ def get_taken_macros(taken_directive_path, gen_macro_usage_meta_path, taken_macr
 
     meta_data = {}
     macro_meta_data = {}
-
     macro_usage_meta_data = convert_macro_usage(gen_macro_usage_meta_path)
-    # print(taken_directive_path)
 
     # Merge taken_directive_path, meta_data, and macro_meta_data, then save to taken_macros_path
     if os.path.exists(taken_directive_path):
@@ -5910,15 +5926,12 @@ def merge_overlapping_blocks(meta_data):
     uf = UnionFind(keys)
     
     # Use IntervalTree for fast intersection detection
-    #print(f"[DEBUG] merge_overlapping_blocks start: {len(meta_data)} items")
-
     tree = IntervalTree()
     for key, item in meta_data.items():
         start = item.get('block_start', 0)
         end = item.get('block_end', start)
         tree[start:end+1] = key
-        #print(f"  {key}: [{start}, {end}]")
-    
+
     # Union intersecting pairs
     for key, item in meta_data.items():
         start = item.get('block_start', 0)
@@ -6406,11 +6419,42 @@ Simple conditional logic         △         ✓
 # YY_RULE_SETUP
 # YY_FATAL_ERROR
 
-
 def merge_meta_macros_with_app(target_dir, gen_macro_meta_path, macros_usage_data):
     print("merging macro_defs with usage")
     macro_defs = read_json(gen_macro_meta_path)
-    
+    paste_list = []
+
+    ### Additional step for paste_expression
+    for macro in macros_usage_data['macros']:
+        for used_item in macro['uses']:
+            if 'paste_expression' not in used_item:
+                continue
+            paste_list.append(used_item)
+
+    macros_by_def_key = {
+        f"{m['name']}:{m['file_path']}:{m['start_line']}": m
+        for m in macros_usage_data['macros']
+    }
+
+    for paste in paste_list:
+        paste_expression = paste['paste_expression']
+        def_key = f"{paste['name']}:{paste['file_path']}:{paste['start_line']}"
+        usage_location = paste['usage_location']
+        # print(usage_location)
+ 
+        if def_key not in macros_by_def_key:
+            continue
+        macro = macros_by_def_key[def_key]  # KeyError: '__acos::0' # needs to be checked!!
+
+        if usage_location in macro['appearances']:
+            macro['appearances'].remove(usage_location)
+            app = f'{usage_location}:{paste_expression}'
+            macro['appearances'].append(app)
+        else:
+            app = f'{usage_location}:{paste_expression}'
+            macro['appearances'].append(app)
+                    
+
     #### Usages
     uses = {}
     for item in macro_defs['macros']:
@@ -6454,7 +6498,18 @@ def merge_meta_macros_with_app(target_dir, gen_macro_meta_path, macros_usage_dat
         uses_list = uses[macro_key]
         for use_item in uses_list:
             app = use_item['usage_location']
+
+            paste_expression = None
+            """
+            if 'paste_expression' in use_item:
+                paste_expression = use_item['paste_expression']
+            """
+
             if app not in macro['appearances']:
+                """
+                if paste_expression is not None:
+                    f'{app}:{paste_expression}'
+                """
                 macro['appearances'].append(app)
     
     return macros_usage_data
@@ -6463,7 +6518,7 @@ def merge_meta_macros_with_app(target_dir, gen_macro_meta_path, macros_usage_dat
 def reform_uses_data(target_dir, macros_usage_data):
 
     print("merging macro_defs with usage")
-    macro_defs = macros_usage_data #read_json(gen_macro_meta_path)
+    macro_defs = macros_usage_data
     
     #### Usages
     uses = {}
@@ -6569,8 +6624,6 @@ def merge_directive_macros_with_app(target_dir, taken_directive_path, macros_usa
 
 
 def get_compile_json(target_dir):
-    print(target_dir)
-
     compile_dir = find_compile_commands_json(target_dir)
     if compile_dir is None:
         return None, None
@@ -6579,7 +6632,6 @@ def get_compile_json(target_dir):
     compile_json_path = compile_dir / "compile_commands.json"
     
     print(compile_json_path)
-    ########
     compile_commands = read_json(compile_json_path)
     EXCLUDE_EXTENSIONS = {'.S', '.s', '.asm', '.ASM'}
     original_count = len(compile_commands)
@@ -6653,14 +6705,13 @@ def clone_compile_json(original_dir, old_dir, new_dir):
     os.makedirs(new_compile_dir, exist_ok=True)
 
     copy_file(compile_json_path, new_compile_dir)
-    # print(compile_json_path)
+
     compile_commands = read_json(compile_json_path)
     compile_commands = replace_in_value(compile_commands, old_dir, new_dir)
     # setup_compile_json(given_compile_dir, given_compile_json_path, f"{MACRO_HOME}", f"{TRANS_HOME}")
     # compile_dir, compile_json_path = given_compile_dir, given_compile_json_path
     write_json(new_compile_json_path, compile_commands)
 
-    print(new_compile_json_path)
 
 
 def append_compile_json_path(compile_json_path, database_dir): #f"{database_dir}/compile_commands.json")
@@ -6716,7 +6767,7 @@ def detect_global_vars(target_dir, meta_dir, global_path, is_program_path):
             name = item['name']
             if item['kind'] != 'global_var':
                 continue
-            #print(item)
+
             def_file_path, def_start_line, def_start_column = parse_def_loc(item['definition'])
 
             if is_system_file(def_file_path, program_files):
@@ -6974,7 +7025,8 @@ def parse_all(round_id, macro_finder, target_dir, meta_dir, div_meta_dir, databa
     # Append with the current compile_commands.json
     append_compile_json_path(compile_json_path, database_dir)
 
-    with ProcessPoolExecutor(max_workers=4) as pool:
+    #with ProcessPoolExecutor(max_workers=2) as pool:
+    with ThreadPoolExecutor(max_workers=2) as pool:
 
         # ---- Step : find_headers || run_finder ----
         futures = {}
@@ -7026,7 +7078,6 @@ def parse_all(round_id, macro_finder, target_dir, meta_dir, div_meta_dir, databa
         all_macro_symbols, gen_macro_meta_path = fut_macro_meta.result()
         update_macro_metadata(all_macro_symbols, meta_dir)
 
-        
         # Wait for both to complete
         for name, fut in futures.items():
             fut.result()  # Exceptions will be raised here if any
@@ -7070,9 +7121,9 @@ def parse_all(round_id, macro_finder, target_dir, meta_dir, div_meta_dir, databa
     insert_guarded_flag(guarded_macros_path, gen_macro_usage_meta_path)
 
     # Get is_flag # Write out cfg attribute items here (macros used for conditional compilation) <- exclude include guards
-    detect_flag(all_directive_path, flag_path, gen_macro_usage_meta_path)  # , guarded_macros_path
+    detect_flag(all_directive_path, flag_path, gen_macro_usage_meta_path) 
     
-    get_taken_macros(taken_directive_path, gen_macro_usage_meta_path, taken_macros_path, database_dir) # gen_meta_path,  # , gen_macro_meta_path
+    get_taken_macros(taken_directive_path, gen_macro_usage_meta_path, taken_macros_path, database_dir)
 
     if round_id == "all":
         detect_global_vars(target_dir, meta_dir, global_path, is_program_path)
@@ -7916,7 +7967,8 @@ def find_headers(target_dir, database_dir, dep_json_path, compile_dir, compile_j
     
     print(f"Processing {len(compile_commands)} files with {max_workers} workers...")
 
-    with ProcessPoolExecutor(max_workers=max_workers) as executor:
+    #with ProcessPoolExecutor(max_workers=max_workers) as executor:
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
         future_to_index = {
             executor.submit(process_find_headers, entry, analyzer_path, str(compile_dir)): i
             for i, entry in enumerate(compile_commands)
@@ -8673,8 +8725,6 @@ def process_generate_macro_usage_metadata(entry, analyzer_path, compile_dir):
 
 def generate_macro_usage_metadata(target_dir, meta_dir, database_dir, independent_path, flag_path, compile_dir, compile_json, round_id):
 
-    analyzer_path = f"{C_PARSER_HOME}/test2/build/analyzer"
-    analyzer_path = f"{C_PARSER_HOME}/usage_macro_analyzer/build/analyzer"
     analyzer_path = f"{C_PARSER_HOME}/usage_macro_ref_analyzer/build/analyzer"
 
     # Path normalization
@@ -8700,10 +8750,14 @@ def generate_macro_usage_metadata(target_dir, meta_dir, database_dir, independen
         )
 
     # Load compile_commands.json (for summary)
+    # with open(compile_json, 'r') as f:
+    #     compile_commands = json.load(f)
+    
     with open(compile_json, 'r') as f:
-        compile_commands = json.load(f)
+        num_files = sum(1 for _ in ijson.items(f, 'item'))
 
-    print(f"Processing {len(compile_commands)} files (batch mode)...")
+    # print(f"Processing {len(compile_commands)} files (batch mode)...")
+    print(f"Processing {num_files} files (batch mode)...")
 
     # === Plan B: Batch execution ===
     cmd = [analyzer_path, "-p", str(compile_dir)]
@@ -8734,7 +8788,61 @@ def generate_macro_usage_metadata(target_dir, meta_dir, database_dir, independen
         print(f"STDERR: {result.stderr}")
         print(f"Command: {' '.join(cmd)}")
         raise ValueError(f"❌ Analyzer error: {result.stderr}")
+    
 
+    # Stream-parse analyzer output and write final metadata incrementally.
+    # This keeps peak memory at ~1 macro instead of all 13k+ macros.
+    compile_dir_abs = os.path.abspath(str(compile_dir))
+    os.makedirs(database_dir, exist_ok=True)
+    database_path = Path(database_dir) / "meta_macro_usage.json"
+    total_count = 0
+
+    all_symbols = []  # keep for return value (same as original)
+
+    if output_path.stat().st_size > 0:
+        try:
+            with open(output_path, 'rb') as f_in, open(database_path, 'w') as f_out:
+                f_out.write('{"macros": [')
+                first = True
+
+                for macro in ijson.items(f_in, 'macros.item'):
+                    # Normalize 'definition' path
+                    definition = macro.get('definition', '')
+                    if ':' in definition:
+                        parts = definition.split(':')
+                        if len(parts) >= 3:
+                            def_file_path = parts[0]
+                            if not os.path.isabs(def_file_path):
+                                def_file_path = os.path.join(compile_dir_abs, def_file_path)
+                            def_file_path = os.path.normpath(def_file_path)
+                            try:
+                                start_line = int(parts[1])
+                                col_num = int(parts[2])
+                            except (ValueError, IndexError):
+                                start_line, col_num = 0, 0
+                            macro['definition'] = f"{def_file_path}:{start_line}:{col_num}"
+
+                    # Attach is_independent here (was a separate loop before)
+                    macro['is_independent'] = get_is_independent(macro)
+
+                    # Write to file incrementally
+                    if not first:
+                        f_out.write(',')
+                    json.dump(macro, f_out, ensure_ascii=False)
+                    first = False
+                    total_count += 1
+
+                    # Keep in memory for the return value (same as original)
+                    all_symbols.append(macro)
+
+                f_out.write(']}')
+
+        except ijson.JSONError as e:
+            print(f"⚠️  JSON parse error: {e}")
+            print(f"Debug file kept at: {output_path}")
+            raise ValueError(f"❌ JSON parse error in batch output")
+
+    """
     # Parse JSON output
     all_symbols = []
     failed_files = []
@@ -8789,41 +8897,42 @@ def generate_macro_usage_metadata(target_dir, meta_dir, database_dir, independen
 
             raise ValueError(f"❌ JSON parse error in batch output")
 
-        """
-        try:
-            file_metadata = json.loads(result.stdout)
-            all_symbols = file_metadata.get('macros', [])
+        # try:
+        #     file_metadata = json.loads(result.stdout)
+        #     all_symbols = file_metadata.get('macros', [])
         
-        except json.JSONDecodeError as e:
-            print(f"⚠️  JSON parse error: {e}")
-            print(f"Error at line {e.lineno}, column {e.colno}")
+        # except json.JSONDecodeError as e:
+        #     print(f"⚠️  JSON parse error: {e}")
+        #     print(f"Error at line {e.lineno}, column {e.colno}")
 
-            lines = result.stdout.split('\n')
-            error_line = e.lineno - 1
-            start = max(0, error_line - 3)
-            end = min(len(lines), error_line + 4)
-            print("--- Context ---")
-            for i in range(start, end):
-                marker = ">>>" if i == error_line else "   "
-                line_content = lines[i][:150] if len(lines[i]) > 150 else lines[i]
-                print(f"  {marker} L{i+1}: {line_content}")
-            print("---------------")
+        #     lines = result.stdout.split('\n')
+        #     error_line = e.lineno - 1
+        #     start = max(0, error_line - 3)
+        #     end = min(len(lines), error_line + 4)
+        #     print("--- Context ---")
+        #     for i in range(start, end):
+        #         marker = ">>>" if i == error_line else "   "
+        #         line_content = lines[i][:150] if len(lines[i]) > 150 else lines[i]
+        #         print(f"  {marker} L{i+1}: {line_content}")
+        #     print("---------------")
 
-            debug_path = "/tmp/debug_macro_batch_output.json"
-            with open(debug_path, 'w') as f:
-                f.write(result.stdout)
-            print(f"Debug saved: {debug_path}")
+        #     debug_path = "/tmp/debug_macro_batch_output.json"
+        #     with open(debug_path, 'w') as f:
+        #         f.write(result.stdout)
+        #     print(f"Debug saved: {debug_path}")
 
-            raise ValueError(f"❌ JSON parse error in batch output")
-        """
+        #     raise ValueError(f"❌ JSON parse error in batch output")
+    """
 
     # Summary of processing results
     print(f"\n{'='*60}")
     print(f"✅ Successfully processed in generate_macro_usage_metadata (batch mode)(batch mode) @round {round_id}")
-    print(f"📊 Total symbols collected: {len(all_symbols)}")
+    # print(f"📊 Total symbols collected: {len(all_symbols)}")
+    print(f"📊 Total symbols collected: {total_count}")
     print(f"{'='*60}\n")
 
     
+    """
     # Wrote independent data independently here
     for item in all_symbols:
         definition = item.get('definition', '')
@@ -8831,8 +8940,8 @@ def generate_macro_usage_metadata(target_dir, meta_dir, database_dir, independen
         end_line = item.get('end_line', None)
 
         item['is_independent'] = get_is_independent(item)
-
-
+    """
+    """
     # Create the overall metadata
     metadata = {'macros': all_symbols}
 
@@ -8841,8 +8950,14 @@ def generate_macro_usage_metadata(target_dir, meta_dir, database_dir, independen
     database_path = Path(database_dir) / "meta_macro_usage.json"
     write_json(str(database_path), metadata)
     print(f"Saved global metadata to: {database_path}")
+    """
+    # metadata file was already written incrementally by the streaming loop above
+    metadata = {'macros': all_symbols}
+    print(f"Saved global metadata to: {database_path}")
 
-    return all_symbols, database_path, metadata #, metadata, database_path
+    return all_symbols, database_path, metadata
+
+
 
 
 def update_macro_usage_metadata(all_symbols, meta_dir, independent_path, flag_path, compile_dir):
@@ -9066,6 +9181,28 @@ def generate_macro_metadata(target_dir, meta_dir, database_dir, independent_path
     # Plan B: Run All at Once
     abs_compile_dir = str(Path(compile_dir).resolve())
     cmd = [macro_analyzer_path, "-p", abs_compile_dir]
+
+    tmp = tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False)
+    tmp_path = tmp.name
+    tmp.close()
+
+    with open(tmp_path, 'w') as out_f:
+        result = subprocess.run(
+            cmd,
+            stdout=out_f,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=False,
+            cwd=str(compile_dir)
+        )
+
+    if result.returncode != 0:
+        print(f"❌ Macro analyzer failed (exit code: {result.returncode})")
+        print(f"STDERR: {result.stderr}")
+        os.unlink(tmp_path)
+        raise ValueError(f"❌ Macro analyzer error: {result.stderr}")
+    
+    """
     result = subprocess.run(
         cmd,
         capture_output=True,
@@ -9079,14 +9216,21 @@ def generate_macro_metadata(target_dir, meta_dir, database_dir, independent_path
         print(f"STDERR: {result.stderr}")
         print(f"Command: {' '.join(cmd)}")
         raise ValueError(f"❌ Macro analyzer error: {result.stderr}")
+    """
 
     all_macros = []
     failed_files = []
     file_macros = defaultdict(list)
+    unique_macros = {}
 
-    if result.stdout.strip():
+    # if result.stdout.strip():
+    if os.path.getsize(tmp_path) > 0:
         try:
-            file_metadata = json.loads(result.stdout)
+            with open(tmp_path) as f:
+                file_metadata = json.load(f)
+            os.unlink(tmp_path)
+            
+            # file_metadata = json.loads(result.stdout)
 
             for macro in file_metadata.get('macros', []):
                 definition = macro.get('definition', '')
@@ -9124,6 +9268,7 @@ def generate_macro_metadata(target_dir, meta_dir, database_dir, independent_path
                                 use_item['file_path'] = uf
                                 use_item['start_line'] = ul
 
+                        """
                         meta_item = {
                             'kind': macro.get('kind'),
                             'name': macro_name,
@@ -9138,11 +9283,61 @@ def generate_macro_metadata(target_dir, meta_dir, database_dir, independent_path
                             'uses': use_data,
                             'file_path': def_file_path
                         }
+                        """
 
+                        macro['start_line'] = start_line
+                        macro['start_column'] = col_num
+                        macro['end_column'] = None
+                        macro['block_start'] = int(start_line)
+                        macro['block_end'] = int(end_line)
+                        macro['file_path'] = def_file_path
+
+                        """
                         file_macros[def_file_path].append((item_key, meta_item))
-                
-                all_macros.append(macro)
+                        """
 
+                        file_macros[def_file_path].append((item_key, macro))
+                
+                """
+                all_macros.append(macro)
+                """
+                uses_sig = tuple(
+                    (u.get('name', ''), u.get('definition', ''), u.get('paste_expression', ''))
+                    for u in macro.get('uses', [])
+                )
+                key = (macro.get('name', ''), macro.get('definition', ''), uses_sig)
+                # key = f"{macro.get('name', '')}:{macro.get('definition', '')}"
+                
+                if key not in unique_macros:
+                    unique_macros[key] = macro
+
+        except json.JSONDecodeError as e:
+            print(f"⚠️  JSON parse error: {e}")
+            print(f"Error at line {e.lineno}, column {e.colno}")
+
+            error_line = e.lineno - 1
+            start = max(0, error_line - 3)
+            end = error_line + 4
+            print("--- Context ---")
+            with open(tmp_path) as f:
+                for i, line in enumerate(f):
+                    if i < start:
+                        continue
+                    if i >= end:
+                        break
+                    marker = ">>>" if i == error_line else "   "
+                    line_content = line.rstrip()[:150]
+                    print(f"  {marker} L{i+1}: {line_content}")
+            print("---------------")
+
+            debug_path = "/tmp/debug_macro_def_batch.json"
+            os.replace(tmp_path, debug_path)
+            print(f"Debug saved: {debug_path}")
+
+            raise ValueError(f"❌ JSON parse error in macro batch output")
+            
+                
+        """
         except json.JSONDecodeError as e:
             print(f"⚠️  JSON parse error: {e}")
             print(f"Error at line {e.lineno}, column {e.colno}")
@@ -9164,12 +9359,15 @@ def generate_macro_metadata(target_dir, meta_dir, database_dir, independent_path
             print(f"Debug saved: {debug_path}")
 
             raise ValueError(f"❌ JSON parse error in macro batch output")
+        """
 
     print(f"\n{'='*60}")
     print(f"✅ Successfully processed in generate_macro_metadata (batch mode) @round {round_id}")
-    print(f"📊 Total macros collected: {len(all_macros)}")
+    #print(f"📊 Total macros collected: {len(all_macros)}")
+    print(f"📊 Total unique macros collected: {len(unique_macros)}")
     print(f"{'='*60}\n")
 
+    """
     # Remove duplicates
     unique_macros = {}
     for macro in all_macros:
@@ -9180,13 +9378,14 @@ def generate_macro_metadata(target_dir, meta_dir, database_dir, independent_path
         #     unique_macros[macro_name] = macro
         if key not in unique_macros:
             unique_macros[key] = macro
-
+    """
+    
     database_path = Path(database_dir) / "meta_macro.json"
     metadata = {"macros": list(unique_macros.values())}
     write_json(str(database_path), metadata)
     print(f"Saved global macro metadata to: {database_path}")
 
-    return file_macros, database_path  #unique_macros, database_path
+    return file_macros, database_path
 
 
 def update_macro_metadata(file_macros, meta_dir):
@@ -9244,29 +9443,31 @@ def merge_appearances_with_uses(target_dir, meta_dir, database_dir, macros_usage
             continue
         for appearance in macro.get('appearances', []):
             # appearance format: "/path/to/file.c:line:column"
-            parts = appearance.rsplit(':', 2)
-            if len(parts) >= 2:
+            parts = appearance.rsplit(':', 3) #2)
+            if len(parts) >= 3:
                 file_path = parts[0]
                 line = int(parts[1])
                 column = int(parts[2])
+
+                paste_expression = None
+                if len(parts) >= 4:
+                    paste_expression = parts[3]
 
                 appearances_by_file[file_path].append({
                     "definition": macro.get('definition'),
                     "file_path": macro.get('file_path'),
                     "start_line": macro.get('start_line'),
                     "end_line": macro.get('end_line'),
+                    "paste_expression" : paste_expression,
                     'name': name,
                     'line': line,
                     'column': column,
                     #'appearances': appearances
                 })
-
     
     meta_files = get_all_files(meta_dir)
-    #print(meta_files)
 
     for meta_path in meta_files:
-        #print(meta_path)
         metadata = read_json(meta_path)
         modified = False
         
@@ -9276,7 +9477,6 @@ def merge_appearances_with_uses(target_dir, meta_dir, database_dir, macros_usage
             start_line = meta.get('block_start')
             end_line = meta.get('block_end')
             existing_uses = meta.get('uses', [])
-            
             
             # Extract file path from the metadata's definition
             if 'definition' in meta:
@@ -9297,8 +9497,10 @@ def merge_appearances_with_uses(target_dir, meta_dir, database_dir, macros_usage
                     #new_uses.append(f"{item['name']}:{item['appearances']}")
                     line = item['line']
                     column = item['column']
+                    paste_expression = item['paste_expression']
                     usage_location = f"{file_path}:{line}:{column}"
-                    new_uses.append({
+
+                    added_item = {
                         "name" : item['name'],
                         "definition" : f"{item.get('definition')}",
                         "file_path": item.get('file_path'),
@@ -9307,8 +9509,11 @@ def merge_appearances_with_uses(target_dir, meta_dir, database_dir, macros_usage
                         #"use_file_path" : file_path,
                         "usage_location" : usage_location,
                         #"line" : item['line']
-                    })
+                    }
+                    new_uses.append(added_item)
 
+                    if 'paste_expression' in item:
+                        added_item['paste_expression'] = item['paste_expression']
             
             if new_uses:
                 meta['uses'] = existing_uses + new_uses
