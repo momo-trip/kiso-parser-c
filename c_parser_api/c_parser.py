@@ -1814,7 +1814,6 @@ def run_macro_finder(macro_finder, c_file, compile_db_dir, target_dir, output_ha
     
     try:
         # ★ Redirect stderr to file to avoid deadlock
-        import tempfile
         with tempfile.NamedTemporaryFile(mode='w+', suffix='.stdout', delete=True) as stdout_file, tempfile.NamedTemporaryFile(mode='w+', suffix='.stderr', delete=True) as stderr_file:
             result = subprocess.run(
                 cmd,
@@ -6177,9 +6176,8 @@ def combine_with_innermost_conditioned_blocks(all_directive_path, target_dir, da
 
 
 def define_conditioned_blocks(file_path, target_dir, round_id, meta_dir):
-    print(f"\n---- Define conditioned blocks for {file_path} ----")
+    # print(f"\n---- Define conditioned blocks for {file_path} ----")
     
-
     meta_data, meta_path = obtain_metadata(file_path, meta_dir, False, None, "def")
     if meta_data is None:
         meta_data = {}
@@ -6324,6 +6322,7 @@ def define_blocks(round_id, all_directive_path, guards_path, target_dir, meta_di
         parent = os.path.dirname(div_meta_dir)
         copy_directory(meta_dir, parent)
 
+    print(f"\n---- Define conditioned blocks ----")
     p_f(define_conditioned_blocks, target_dir, True, True, round_id, meta_dir)
 
 
@@ -7171,7 +7170,7 @@ def parse_all(round_id, macro_finder, target_dir, meta_dir, div_meta_dir, databa
         #insert_ifdef_statement(cfg_path, target_dir, meta_dir) # flag_path = cfg_path maybe
         insert_ifdef_statement(flag_path, target_dir, meta_dir) # flag_path = cfg_path maybe
 
-
+    print(f"\n---- Define conditioned blocks ----")
     p_f(define_conditioned_blocks, target_dir, True, True, round_id, meta_dir) # # , all_macro_path dep_json_path # blocks.py, # analyze_blocks
 
     # define blocks
@@ -8259,9 +8258,6 @@ def generate_metadata(macro_on, target_dir, meta_dir, database_dir, compile_dir,
     """
     print("Starting generate_metadata...")
 
-    analyzer_path = f"{C_PARSER_HOME}/c_analyzer/analyzer" 
-    analyzer_path = f"{C_PARSER_HOME}/c_analyzer/build/analyzer" 
-    analyzer_path = f"{C_PARSER_HOME}/test/build/analyzer"
     analyzer_path = f"{C_PARSER_HOME}/usage_analyzer/build/analyzer"
 
 
@@ -8310,6 +8306,35 @@ def generate_metadata(macro_on, target_dir, meta_dir, database_dir, compile_dir,
 
     # === Plan B: Batch execution ===
     cmd = [analyzer_path, "-p", str(compile_dir)]
+    
+    tmp = tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False)
+    tmp_path = tmp.name
+    tmp.close()
+
+    with open(tmp_path, 'w') as out_f:
+        result = subprocess.run(
+            cmd,
+            stdout=out_f,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=False,
+            cwd=str(compile_dir)
+        )
+
+    if result.returncode != 0:
+        print(f"\n=== Error processing {compile_dir} ===")
+        print(f"Command: {' '.join(cmd)}")
+        print(f"Return code: {result.returncode}")
+        print(f"Stderr:\n{result.stderr}")
+        os.unlink(tmp_path)
+        raise subprocess.CalledProcessError(
+            result.returncode,
+            cmd,
+            "",
+            result.stderr
+        )
+    
+    """
     result = subprocess.run(
         cmd,
         capture_output=True,
@@ -8317,14 +8342,6 @@ def generate_metadata(macro_on, target_dir, meta_dir, database_dir, compile_dir,
         check=True, #check=False,
         cwd=str(compile_dir)
     )
-
-    """
-    if result.returncode != 0:
-        print(f"❌ Analyzer failed (exit code: {result.returncode})")
-        print(f"STDERR: {result.stderr}")
-        print(f"Command: {' '.join(cmd)}")
-        raise ValueError(f"❌ Analyzer error: {result.stderr}")
-    """
 
     if result.returncode != 0:
         print(f"\n=== Error processing {compile_dir} ===")
@@ -8339,12 +8356,44 @@ def generate_metadata(macro_on, target_dir, meta_dir, database_dir, compile_dir,
             result.stdout, 
             result.stderr
         )
-
+    """
 
     # Parse JSON output
     all_symbols = []
     failed_files = []
 
+    if os.path.getsize(tmp_path) > 0:
+        try:
+            with open(tmp_path) as f:
+                file_metadata = json.load(f)
+            os.unlink(tmp_path)
+            all_symbols = file_metadata.get('symbols', [])
+        except json.JSONDecodeError as e:
+            print(f"⚠️  JSON parse error: {e}")
+            print(f"Error at line {e.lineno}, column {e.colno}")
+
+            error_line = e.lineno - 1
+            start = max(0, error_line - 3)
+            end = error_line + 4
+            print("--- Context ---")
+            with open(tmp_path) as f:
+                for i, line in enumerate(f):
+                    if i < start:
+                        continue
+                    if i >= end:
+                        break
+                    marker = ">>>" if i == error_line else "   "
+                    line_content = line.rstrip()[:150]
+                    print(f"  {marker} L{i+1}: {line_content}")
+            print("---------------")
+
+            debug_path = "/tmp/debug_batch_output.json"
+            os.replace(tmp_path, debug_path)
+            print(f"Debug saved: {debug_path}")
+
+            raise ValueError(f"❌ JSON parse error in batch output")
+
+    """
     if result.stdout.strip():
         try:
             file_metadata = json.loads(result.stdout)
@@ -8370,6 +8419,8 @@ def generate_metadata(macro_on, target_dir, meta_dir, database_dir, compile_dir,
             print(f"Debug saved: {debug_path}")
 
             raise ValueError(f"❌ JSON parse error in batch output")
+    
+    """
 
     # Summary of processing results
     print(f"\n{'='*60}")
@@ -8386,109 +8437,109 @@ def generate_metadata(macro_on, target_dir, meta_dir, database_dir, compile_dir,
     write_json(str(database_path), metadata)
     print(f"Saved global metadata to: {database_path}")
 
-    """
-    # Classify symbols by file
-    file_symbols = defaultdict(list)
-    macro_symbols = defaultdict(list)
-
-    for item in all_symbols:
-        if macro_on is False:
-            if 'macro' in item.get('kind'):
-                continue
-
-        definition = item.get('definition', '')
-        start_line = item.get('start_line', None)
-        end_line = item.get('end_line', None)
-
-        # Extract file path from definition
-        if ':' in definition:
-            parts = definition.split(':')
-            if len(parts) >= 3:
-                file_path = parts[0]
-
-                if not os.path.isabs(file_path):
-                    file_path = os.path.join(str(compile_dir), file_path)
-
-                file_path = os.path.normpath(file_path)
-
-                try:
-                    line_num = int(parts[1])
-                    col_num = int(parts[2])
-                except (ValueError, IndexError):
-                    line_num = 0
-                    col_num = 0
-
-                use_data = item.get('uses', [])
-                for use_item in use_data:
-                    if 'definition' in use_item:
-                        def_file_path, def_line, def_col = parse_def_loc(use_item['definition'])
-                        use_item['file_path'] = def_file_path
-                        use_item['start_line'] = def_line
-
-                meta_item = {
-                    'kind': item.get('kind', 'unknown'),
-                    'name': item.get('name', ''),
-                    'definition': definition,
-                    'start_line': start_line,
-                    'start_column': col_num,
-                    'end_line': end_line,
-                    'block_start': int(start_line),
-                    'block_end': int(end_line),
-                    'rust_code': {
-                        'file_path': None,
-                        'start_line': None,
-                        'content': None,
-                    },
-                    'uses': use_data
-                }
-                if item.get('kind') == 'function':
-                    meta_item['signature'] = item.get('signature', '')
-
-                if macro_on is True:
-                    if 'macro' in item.get('kind'):
-                        macro_symbols[file_path].append(meta_item)
-                    else:
-                        file_symbols[file_path].append(meta_item)
-                else:
-                    file_symbols[file_path].append(meta_item)
-
-    # Save metadata per file
-    print(f"\nSaving per-file metadata...")
-    for file_path, symbols in file_symbols.items():
-        if not os.path.exists(file_path):
-            print(f"⚠️  Skipping non-existent file: {file_path}")
-            continue
-
-        meta_path = obtain_metadata(file_path, meta_dir, False, True, "def")
-        meta_path = Path(meta_path)
-
-        if not os.path.exists(meta_path):
-            existing_data = {}
-        else:
-            existing_data = read_json(meta_path)
-
-        for symbol in symbols:
-            name = symbol['name']
-            s_line = symbol['start_line']
-            item_key = f"{name}:{file_path}:{s_line}"
-
-            if item_key not in existing_data:
-                existing_data[item_key] = symbol
-
-        write_json(meta_path, existing_data)
-
-    macro_dep_path = f"{database_dir}/macro_deps.json"
-    if macro_on is True:
-        write_json(macro_dep_path, macro_symbols)
-
-    print(f"\n{'='*60}")
-    print(f"📁 Total files with metadata: {len(file_symbols)}")
-    print(f"📊 Total symbols: {sum(len(syms) for syms in file_symbols.values())}")
-    print(f"{'='*60}\n")
-    """
-
     return all_symbols, database_path  #metadata, database_path, macro_dep_path
 
+
+"""
+# Classify symbols by file
+file_symbols = defaultdict(list)
+macro_symbols = defaultdict(list)
+
+for item in all_symbols:
+    if macro_on is False:
+        if 'macro' in item.get('kind'):
+            continue
+
+    definition = item.get('definition', '')
+    start_line = item.get('start_line', None)
+    end_line = item.get('end_line', None)
+
+    # Extract file path from definition
+    if ':' in definition:
+        parts = definition.split(':')
+        if len(parts) >= 3:
+            file_path = parts[0]
+
+            if not os.path.isabs(file_path):
+                file_path = os.path.join(str(compile_dir), file_path)
+
+            file_path = os.path.normpath(file_path)
+
+            try:
+                line_num = int(parts[1])
+                col_num = int(parts[2])
+            except (ValueError, IndexError):
+                line_num = 0
+                col_num = 0
+
+            use_data = item.get('uses', [])
+            for use_item in use_data:
+                if 'definition' in use_item:
+                    def_file_path, def_line, def_col = parse_def_loc(use_item['definition'])
+                    use_item['file_path'] = def_file_path
+                    use_item['start_line'] = def_line
+
+            meta_item = {
+                'kind': item.get('kind', 'unknown'),
+                'name': item.get('name', ''),
+                'definition': definition,
+                'start_line': start_line,
+                'start_column': col_num,
+                'end_line': end_line,
+                'block_start': int(start_line),
+                'block_end': int(end_line),
+                'rust_code': {
+                    'file_path': None,
+                    'start_line': None,
+                    'content': None,
+                },
+                'uses': use_data
+            }
+            if item.get('kind') == 'function':
+                meta_item['signature'] = item.get('signature', '')
+
+            if macro_on is True:
+                if 'macro' in item.get('kind'):
+                    macro_symbols[file_path].append(meta_item)
+                else:
+                    file_symbols[file_path].append(meta_item)
+            else:
+                file_symbols[file_path].append(meta_item)
+
+# Save metadata per file
+print(f"\nSaving per-file metadata...")
+for file_path, symbols in file_symbols.items():
+    if not os.path.exists(file_path):
+        print(f"⚠️  Skipping non-existent file: {file_path}")
+        continue
+
+    meta_path = obtain_metadata(file_path, meta_dir, False, True, "def")
+    meta_path = Path(meta_path)
+
+    if not os.path.exists(meta_path):
+        existing_data = {}
+    else:
+        existing_data = read_json(meta_path)
+
+    for symbol in symbols:
+        name = symbol['name']
+        s_line = symbol['start_line']
+        item_key = f"{name}:{file_path}:{s_line}"
+
+        if item_key not in existing_data:
+            existing_data[item_key] = symbol
+
+    write_json(meta_path, existing_data)
+
+macro_dep_path = f"{database_dir}/macro_deps.json"
+if macro_on is True:
+    write_json(macro_dep_path, macro_symbols)
+
+print(f"\n{'='*60}")
+print(f"📁 Total files with metadata: {len(file_symbols)}")
+print(f"📊 Total symbols: {sum(len(syms) for syms in file_symbols.values())}")
+print(f"{'='*60}\n")
+"""
 
 def update_metadata(all_symbols, meta_dir, database_dir, macro_on):
 
@@ -8749,14 +8800,9 @@ def generate_macro_usage_metadata(target_dir, meta_dir, database_dir, independen
             "Please build the analyzer first."
         )
 
-    # Load compile_commands.json (for summary)
-    # with open(compile_json, 'r') as f:
-    #     compile_commands = json.load(f)
-    
     with open(compile_json, 'r') as f:
         num_files = sum(1 for _ in ijson.items(f, 'item'))
 
-    # print(f"Processing {len(compile_commands)} files (batch mode)...")
     print(f"Processing {num_files} files (batch mode)...")
 
     # === Plan B: Batch execution ===
