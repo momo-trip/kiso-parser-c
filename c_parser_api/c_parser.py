@@ -9237,6 +9237,7 @@ def generate_macro_metadata(target_dir, meta_dir, database_dir, independent_path
             cmd,
             stdout=out_f,
             stderr=subprocess.PIPE,
+            #stderr=sys.stderr,
             text=True,
             check=False,
             cwd=str(compile_dir)

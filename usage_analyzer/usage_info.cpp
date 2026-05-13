@@ -15,6 +15,7 @@
 #include <map>
 #include <set>
 #include <mutex>
+#include <unordered_map>
 
 // C++17 filesystem check
 #if __cplusplus >= 201703L && __has_include(<filesystem>)
@@ -382,12 +383,21 @@ public:
         return currentOwner;
     }
     
+    // // Merge into the global symbol map
+    // void mergeToGlobal() {
+    //     std::lock_guard<std::mutex> lock(symbolsMutex);
+    //     for (auto &pair : symbols) {
+    //         globalSymbols[pair.first] = pair.second;
+    //     }
+    // }
+
     // Merge into the global symbol map
     void mergeToGlobal() {
         std::lock_guard<std::mutex> lock(symbolsMutex);
         for (auto &pair : symbols) {
-            globalSymbols[pair.first] = pair.second;
+            globalSymbols[pair.first] = std::move(pair.second);   // ★ copy -> move
         }
+        symbols.clear();  // ★ make moved-from state explicit
     }
 };
 
@@ -897,51 +907,115 @@ public:
         // 2. Resolve macro dependencies
         {
             std::lock_guard<std::mutex> lock(macroDependenciesMutex);
-            
-            for (const auto &dep : macroDependencies) {
-                // Check if the macro exists
-                if (!Collector.symbols.count(dep.macroUSR)) continue;
-                
-                // Find the reference target
-                std::string targetUSR;
-                
-                // 2-1. Look up as a macro
-                // std::string macroTargetUSR = "macro:" + dep.refName;
-                // if (Collector.symbols.count(macroTargetUSR)) {
-                //     targetUSR = macroTargetUSR;
-                // }
 
-                std::string macroPrefix = "macro:" + dep.refName + "@";
-                for (const auto &symbolPair : Collector.symbols) {
-                    if (symbolPair.first.rfind(macroPrefix, 0) == 0) {
-                        targetUSR = symbolPair.first;
-                        break;
+            // ★ Build name -> USR indexes once before the loop.
+            //    Original logic: for each dep, scan all symbols linearly.
+            //    New logic: O(N) build, then O(1) lookup per dep.
+
+            // Index 1: refName -> macro USR (macro:refName@...)
+            std::unordered_map<std::string, std::string> macroByName;
+            // Index 2: refName -> normal symbol USR (matched on name OR expanded_name)
+            //          Keep the first encountered (equivalent to "first match in for-loop")
+            std::unordered_map<std::string, std::string> symbolByName;
+
+            for (const auto &symbolPair : Collector.symbols) {
+                const std::string &usr = symbolPair.first;
+                const SymbolInfo &info = symbolPair.second;
+
+                // macro USR is of the form "macro:NAME@..."
+                if (usr.rfind("macro:", 0) == 0) {
+                    size_t atPos = usr.find('@', 6);  // 6 = strlen("macro:")
+                    if (atPos != std::string::npos) {
+                        std::string macroName = usr.substr(6, atPos - 6);
+                        macroByName.emplace(macroName, usr);  // keep first
                     }
                 }
-                // 2-2. Look up as a function, variable, or type
-                // else {
-                if (targetUSR.empty()) {
-                    for (const auto &symbolPair : Collector.symbols) {
-                        const SymbolInfo &info = symbolPair.second;
-                        
-                        // Find a symbol with a matching name
-                        if (info.name == dep.refName || 
-                            info.expanded_name == dep.refName) {
-                            targetUSR = symbolPair.first;
-                            break;
-                        }
+
+                // Normal name index (also pick up macros' .name for completeness,
+                // but macroByName is checked first so this only matters as fallback)
+                if (!info.name.empty()) {
+                    symbolByName.emplace(info.name, usr);
+                }
+                if (!info.expanded_name.empty() && info.expanded_name != info.name) {
+                    symbolByName.emplace(info.expanded_name, usr);
+                }
+            }
+
+            for (const auto &dep : macroDependencies) {
+                if (!Collector.symbols.count(dep.macroUSR)) continue;
+
+                std::string targetUSR;
+
+                // 2-1. Look up as a macro
+                auto mIt = macroByName.find(dep.refName);
+                if (mIt != macroByName.end()) {
+                    targetUSR = mIt->second;
+                } else {
+                    // 2-2. Look up as a function, variable, or type
+                    auto sIt = symbolByName.find(dep.refName);
+                    if (sIt != symbolByName.end()) {
+                        targetUSR = sIt->second;
                     }
                 }
-                
-                // Record the dependency
+
                 if (!targetUSR.empty()) {
                     Collector.symbols[dep.macroUSR].uses.insert(targetUSR);
                     Collector.symbols[dep.macroUSR].usage_locations[targetUSR].insert(dep.location);
                 }
             }
-            
+
             macroDependencies.clear();
         }
+
+        // // 2. Resolve macro dependencies
+        // {
+        //     std::lock_guard<std::mutex> lock(macroDependenciesMutex);
+            
+        //     for (const auto &dep : macroDependencies) {
+        //         // Check if the macro exists
+        //         if (!Collector.symbols.count(dep.macroUSR)) continue;
+                
+        //         // Find the reference target
+        //         std::string targetUSR;
+                
+        //         // 2-1. Look up as a macro
+        //         // std::string macroTargetUSR = "macro:" + dep.refName;
+        //         // if (Collector.symbols.count(macroTargetUSR)) {
+        //         //     targetUSR = macroTargetUSR;
+        //         // }
+
+        //         std::string macroPrefix = "macro:" + dep.refName + "@";
+        //         for (const auto &symbolPair : Collector.symbols) {
+        //             if (symbolPair.first.rfind(macroPrefix, 0) == 0) {
+        //                 targetUSR = symbolPair.first;
+        //                 break;
+        //             }
+        //         }
+        //         // 2-2. Look up as a function, variable, or type
+        //         // else {
+        //         if (targetUSR.empty()) {
+        //             for (const auto &symbolPair : Collector.symbols) {
+        //                 const SymbolInfo &info = symbolPair.second;
+                        
+        //                 // Find a symbol with a matching name
+        //                 if (info.name == dep.refName || 
+        //                     info.expanded_name == dep.refName) {
+        //                     targetUSR = symbolPair.first;
+        //                     break;
+        //                 }
+        //             }
+        //         }
+                
+        //         // Record the dependency
+        //         if (!targetUSR.empty()) {
+        //             Collector.symbols[dep.macroUSR].uses.insert(targetUSR);
+        //             Collector.symbols[dep.macroUSR].usage_locations[targetUSR].insert(dep.location);
+        //         }
+        //     }
+            
+        //     macroDependencies.clear();
+        // }
+
 
         // Link declarations to their corresponding definition locations
         for (auto &pair : Collector.symbols) {
@@ -1004,7 +1078,27 @@ std::string escapeJsonString(const std::string &str) {
 
 
 void printAllSymbols() {
-    // // added 
+    // ★ Build clangUSR -> (count, first SymbolInfo*) index once, then
+    //    use it to replace the O(N) inner scan with O(1) lookup.
+    //    Equivalent to: pick definitionRef only when exactly one
+    //    non-decl symbol shares the same clangUSR (prefix before "@/").
+    std::unordered_map<std::string, std::pair<int, const SymbolInfo*>> clangUSRIndex;
+    for (const auto &s : globalSymbols) {
+        // Skip declarations (must be a definition entry)
+        if (s.first.find("#decl@") != std::string::npos) continue;
+        std::string sClangUSR = s.first;
+        size_t sPathAt = sClangUSR.find("@/");
+        if (sPathAt != std::string::npos) {
+            sClangUSR = sClangUSR.substr(0, sPathAt);
+        }
+        auto it = clangUSRIndex.find(sClangUSR);
+        if (it == clangUSRIndex.end()) {
+            clangUSRIndex[sClangUSR] = {1, &s.second};
+        } else {
+            it->second.first += 1;
+        }
+    }
+
     for (auto &pair : globalSymbols) {
         const std::string &key = pair.first;
         SymbolInfo &info = pair.second;
@@ -1023,24 +1117,50 @@ void printAllSymbols() {
                 clangUSR = clangUSR.substr(0, pathAt);
             }
             
-            std::vector<const SymbolInfo*> candidates;
-            for (const auto &s : globalSymbols) {
-                if (s.first.find("#decl@") != std::string::npos) continue;
-                std::string sClangUSR = s.first;
-                size_t sPathAt = sClangUSR.find("@/");
-                if (sPathAt != std::string::npos) {
-                    sClangUSR = sClangUSR.substr(0, sPathAt);
-                }
-                if (sClangUSR == clangUSR) {
-                    candidates.push_back(&s.second);
-                }
-            }
-            
-            if (candidates.size() == 1) {
-                info.definitionRef = candidates[0]->defLocation;
+            // ★ O(1) index lookup instead of linear scan
+            auto idxIt = clangUSRIndex.find(clangUSR);
+            if (idxIt != clangUSRIndex.end() && idxIt->second.first == 1) {
+                info.definitionRef = idxIt->second.second->defLocation;
             }
         }
     }
+    // // // added 
+    // for (auto &pair : globalSymbols) {
+    //     const std::string &key = pair.first;
+    //     SymbolInfo &info = pair.second;
+        
+    //     size_t declPos = key.find("#decl@");
+    //     if (declPos == std::string::npos) continue;
+        
+    //     std::string baseUSR = key.substr(0, declPos);
+    //     auto defIt = globalSymbols.find(baseUSR);
+    //     if (defIt != globalSymbols.end()) {
+    //         info.definitionRef = defIt->second.defLocation;
+    //     } else {
+    //         std::string clangUSR = baseUSR;
+    //         size_t pathAt = clangUSR.find("@/");
+    //         if (pathAt != std::string::npos) {
+    //             clangUSR = clangUSR.substr(0, pathAt);
+    //         }
+            
+    //         std::vector<const SymbolInfo*> candidates;
+    //         for (const auto &s : globalSymbols) {
+    //             if (s.first.find("#decl@") != std::string::npos) continue;
+    //             std::string sClangUSR = s.first;
+    //             size_t sPathAt = sClangUSR.find("@/");
+    //             if (sPathAt != std::string::npos) {
+    //                 sClangUSR = sClangUSR.substr(0, sPathAt);
+    //             }
+    //             if (sClangUSR == clangUSR) {
+    //                 candidates.push_back(&s.second);
+    //             }
+    //         }
+            
+    //         if (candidates.size() == 1) {
+    //             info.definitionRef = candidates[0]->defLocation;
+    //         }
+    //     }
+    // }
 
     // for (auto &pair : globalSymbols) {
     //     const std::string &key = pair.first;
@@ -1063,6 +1183,20 @@ void printAllSymbols() {
     // }
     // // ended
     
+     // added
+    // ★ Build baseUSR -> first decl SymbolInfo* index for the
+    //    "depUSR + #decl@..." fallback lookup in the uses output.
+    //    Equivalent to: scan globalSymbols in order and find the first
+    //    entry whose key starts with "depUSR#decl@".
+    std::unordered_map<std::string, const SymbolInfo*> declByBaseUSR;
+    for (const auto &s : globalSymbols) {
+        size_t pos = s.first.find("#decl@");
+        if (pos == std::string::npos) continue;
+        std::string base = s.first.substr(0, pos);
+        declByBaseUSR.emplace(base, &s.second);  // keep first encountered
+    }
+    // ended
+
     std::cout << "{\n";
     std::cout << "  \"symbols\": [\n";
     
@@ -1106,7 +1240,26 @@ void printAllSymbols() {
         std::cout << "      \"start_line\": " << info.startLine << ",\n";
         std::cout << "      \"end_line\": " << info.endLine << ",\n";
         std::cout << "      \"uses\": [\n";
-        
+
+
+        // bool firstDep = true;
+        // for (const auto &depUSR : info.uses) {
+
+        //     //const SymbolInfo &dep = globalSymbols[depUSR];
+        //     const SymbolInfo *dep = nullptr;
+        //     if (globalSymbols.count(depUSR)) {
+        //         dep = &globalSymbols[depUSR];
+        //     } else {
+        //         std::string prefix = depUSR + "#decl@";
+        //         for (const auto &s : globalSymbols) {
+        //             if (s.first.rfind(prefix, 0) == 0) {
+        //                 dep = &s.second;
+        //                 break;
+        //             }
+        //         }
+        //     }
+        //     if (!dep) continue;
+
         bool firstDep = true;
         for (const auto &depUSR : info.uses) {
 
@@ -1115,12 +1268,10 @@ void printAllSymbols() {
             if (globalSymbols.count(depUSR)) {
                 dep = &globalSymbols[depUSR];
             } else {
-                std::string prefix = depUSR + "#decl@";
-                for (const auto &s : globalSymbols) {
-                    if (s.first.rfind(prefix, 0) == 0) {
-                        dep = &s.second;
-                        break;
-                    }
+                // ★ O(1) index lookup instead of linear scan
+                auto declIt = declByBaseUSR.find(depUSR);
+                if (declIt != declByBaseUSR.end()) {
+                    dep = declIt->second;
                 }
             }
             if (!dep) continue;
