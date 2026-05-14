@@ -151,7 +151,6 @@ public:
     explicit MacroAnalyzer(SourceManager *SM) : SM(SM) {}
     
     std::string getAbsolutePath(StringRef filename) {
-
         // added: Prepend compile_dir to virtual paths such as <built-in> and <command line>
         std::string name = filename.str();
         if (!name.empty() && name[0] == '<') {
@@ -162,13 +161,41 @@ public:
         }
         // ended
 
-        std::filesystem::path p(filename.str());
+        std::filesystem::path p(name);
+
+        // Resolve symbolic links to obtain the physical path
         std::error_code ec;
+        auto canonical = std::filesystem::canonical(p, ec);
+        if (!ec) {
+            return canonical.string();
+        }
+
+        // Fallback when canonical() fails (e.g., file does not exist)
         if (!p.is_absolute()) {
             p = std::filesystem::absolute(p, ec);
         }
         return p.lexically_normal().string();
     }
+
+    // std::string getAbsolutePath(StringRef filename) {
+
+    //     // added: Prepend compile_dir to virtual paths such as <built-in> and <command line>
+    //     std::string name = filename.str();
+    //     if (!name.empty() && name[0] == '<') {
+    //         if (!g_compileDir.empty()) {
+    //             return g_compileDir + "/" + name;
+    //         }
+    //         return name;
+    //     }
+    //     // ended
+
+    //     std::filesystem::path p(filename.str());
+    //     std::error_code ec;
+    //     if (!p.is_absolute()) {
+    //         p = std::filesystem::absolute(p, ec);
+    //     }
+    //     return p.lexically_normal().string();
+    // }
     
     std::string getOriginalLocationString(SourceLocation Loc) {
         if (Loc.isInvalid()) return "unknown";

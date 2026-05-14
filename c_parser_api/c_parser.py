@@ -6419,7 +6419,7 @@ Simple conditional logic         △         ✓
 # YY_FATAL_ERROR
 
 def merge_meta_macros_with_app(target_dir, gen_macro_meta_path, macros_usage_data):
-    print("merging macro_defs with usage")
+    print("Merging macro_defs with usage")
     macro_defs = read_json(gen_macro_meta_path)
     paste_list = []
 
@@ -6515,8 +6515,7 @@ def merge_meta_macros_with_app(target_dir, gen_macro_meta_path, macros_usage_dat
 
 
 def reform_uses_data(target_dir, macros_usage_data):
-
-    print("merging macro_defs with usage")
+    print("Reforming uses data...")
     macro_defs = macros_usage_data
     
     #### Usages
@@ -6571,7 +6570,7 @@ def reform_uses_data(target_dir, macros_usage_data):
 
 
 def merge_directive_macros_with_app(target_dir, taken_directive_path, macros_usage_data):
-    print("merging directive_macros with usage...")
+    print("Merging directive_macros with usage...")
 
     directives = read_json(taken_directive_path)
     seen = set()
@@ -8302,7 +8301,7 @@ def generate_metadata(macro_on, target_dir, meta_dir, database_dir, compile_dir,
         with open(compile_json, 'w') as f:
             json.dump(compile_commands, f, indent=2)
     """
-    print(f"Processing {len(compile_commands)} files (batch mode)...")
+    print(f"In generate_metadata: Processing {len(compile_commands)} files (batch mode)...")
 
     # === Plan B: Batch execution ===
     cmd = [analyzer_path, "-p", str(compile_dir)]
@@ -8803,7 +8802,7 @@ def generate_macro_usage_metadata(target_dir, meta_dir, database_dir, independen
     with open(compile_json, 'r') as f:
         num_files = sum(1 for _ in ijson.items(f, 'item'))
 
-    print(f"Processing {num_files} files (batch mode)...")
+    print(f"In generate_macro_usage_metadata: Processing {num_files} files (batch mode)...")
 
     # === Plan B: Batch execution ===
     cmd = [analyzer_path, "-p", str(compile_dir)]

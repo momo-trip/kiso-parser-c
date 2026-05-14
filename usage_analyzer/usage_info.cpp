@@ -162,15 +162,32 @@ public:
         return "";
     }
     
-    // Path normalization function
+    // // Path normalization function
+    // std::string getAbsolutePath(StringRef filename) {
+    //     std::filesystem::path p(filename.str());
+        
+    //     std::error_code ec;
+    //     if (!p.is_absolute()) {
+    //         p = std::filesystem::absolute(p, ec);
+    //     }
+        
+    //     return p.lexically_normal().string();
+    // }
+
     std::string getAbsolutePath(StringRef filename) {
         std::filesystem::path p(filename.str());
         
+        // Resolve symbolic links to obtain the physical path
         std::error_code ec;
+        auto canonical = std::filesystem::canonical(p, ec);
+        if (!ec) {
+            return canonical.string();
+        }
+        
+        // Fallback when canonical() fails (e.g., file does not exist)
         if (!p.is_absolute()) {
             p = std::filesystem::absolute(p, ec);
         }
-        
         return p.lexically_normal().string();
     }
     
