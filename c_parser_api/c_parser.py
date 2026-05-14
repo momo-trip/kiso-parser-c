@@ -2134,6 +2134,7 @@ def put_in_target_dir(file_path, target_dir):
 def save_all_directives(input_file, unordered_macros_path, macros_path, database_dir, target_dir, skipped_flag, evaluated_flag):
     """Parse macro-finder output and save to JSON (complete version based on Close information)"""
     
+    print(f"Starting save_all_directives (skipped_flag: {skipped_flag})...")
     data = {
         "files": {},
         "macros": {}
@@ -3842,8 +3843,6 @@ def save_all_directives(input_file, unordered_macros_path, macros_path, database
 
                 item['block_end'] = end_line
     """
-    ################
-
     with open(unordered_macros_path, 'w', encoding='utf-8') as f:
         json.dump(data["files"], f, indent=4, ensure_ascii=False)
     
@@ -7025,9 +7024,7 @@ def parse_all(round_id, macro_finder, target_dir, meta_dir, div_meta_dir, databa
         option = ""
 
     print(f"\n====== Start round {round_id} ======")
-    # print(build_path)
-    # print(option)
-
+    
     if round_id == "all":
         given_compie_dir = find_compile_commands_json(target_dir)
         copy_file(given_compile_json_path, f"{database_dir}")
@@ -7051,17 +7048,21 @@ def parse_all(round_id, macro_finder, target_dir, meta_dir, div_meta_dir, databa
     if round_id == "1":
         compile_dir, compile_json_path = get_compile_json(target_dir)
 
-        # Stash the compile_commands.json before modifying sources.
-        # The next build (after strip_line) would only record the rebuilt
-        # files and overwrite the complete record, so we save it now.
-        stash_path = str(compile_json_path) + ".stash"
+        # # Stash the compile_commands.json before modifying sources.
+        # # The next build (after strip_line) would only record the rebuilt
+        # # files and overwrite the complete record, so we save it now.
+        # stash_path = str(compile_json_path) + ".stash"
+
+        # Place stash under target_dir (outside any build/ that may be wiped),
+        # but remember the original compile_json_path so we restore to the
+        # exact same location later.
+        stash_path = str(Path(target_dir) / "compile_commands.json.stash")
         shutil.copy2(compile_json_path, stash_path)
 
         strip_line_directives_in_dir(target_dir)
         
         try:
             strip_line_directives_in_dir(target_dir)
-            # print(target_dir)
             make_all_files_read_only(target_dir)
 
             error_output, std_output = run_script_wo_log(build_path, 10000, True, None, option)
@@ -7071,9 +7072,15 @@ def parse_all(round_id, macro_finder, target_dir, meta_dir, div_meta_dir, databa
         finally:
             make_all_files_writable(target_dir)
 
-            # Restore the original compile_commands.json (with full file list)
+            # Restore to the original compile_json_path. The build may have
+            # removed its parent directory (e.g. build/), so recreate it.
+            Path(compile_json_path).parent.mkdir(parents=True, exist_ok=True)
+
             shutil.copy2(stash_path, compile_json_path)
             Path(stash_path).unlink()
+
+            # shutil.copy2(stash_path, compile_json_path)
+            # Path(stash_path).unlink()
 
 
     check_permission(target_dir)
