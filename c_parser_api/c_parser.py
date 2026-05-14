@@ -4691,6 +4691,24 @@ def detect_guarded_macros(all_directive_path, target_dir, guarded_macros_path, i
     return guarded_macros
 
 
+import json, os
+
+def write_json_streaming(path, data, list_key='macros'):
+    items = data[list_key]
+    others = {k: v for k, v in data.items() if k != list_key}
+    tmp = str(path) + '.tmp'
+    with open(tmp, 'w') as f:
+        f.write('{')
+        for k, v in others.items():
+            f.write(f'{json.dumps(k)}:{json.dumps(v)},')
+        f.write(f'{json.dumps(list_key)}:[')
+        for i, item in enumerate(items):
+            if i: f.write(',')
+            json.dump(item, f)
+        f.write(']}')
+    os.replace(tmp, str(path))
+
+
 def insert_guarded_flag(guarded_macros_path, gen_macro_usage_meta_path):
     print("Insert guarded flags...")
 
@@ -4740,7 +4758,8 @@ def insert_guarded_flag(guarded_macros_path, gen_macro_usage_meta_path):
                 # ended
                 break
 
-    write_json(gen_macro_usage_meta_path, usage_macros)
+    # write_json(gen_macro_usage_meta_path, usage_macros)
+    write_json_streaming(gen_macro_usage_meta_path, usage_macros, 'macros')
 
 
 def read_file_lines(file_path, start, end):
@@ -6176,138 +6195,67 @@ def combine_with_innermost_conditioned_blocks(all_directive_path, target_dir, da
 
 
 def define_conditioned_blocks(file_path, target_dir, round_id, meta_dir):
-    # print(f"\n---- Define conditioned blocks for {file_path} ----")
-    
     meta_data, meta_path = obtain_metadata(file_path, meta_dir, False, None, "def")
     if meta_data is None:
         meta_data = {}
-    
-    """
-    with open(outermost_path, 'r') as f:
-        all_conds = json.load(f)
-    
-    print(outermost_path)
-    if file_path not in all_conds:
-        return
-    file_conds = all_conds[file_path]  #all_conds.get(file_path, [])
 
-    #file_conds = all_conds.get(file_path, [])
-
-    # if not file_conds:
-    #     write_json(meta_path, meta_data)
-    #     return
-    
-    reformed_file_conds = {}
-    for item in file_conds:
-        tmp_key = f"{item['type']}:{item['file_path']}:{item['block_start']}" #item['start_line']}"
-        reformed_file_conds[tmp_key] = item
-    
-    merged = meta_data | reformed_file_conds
-    meta_data = merged
-    """
-
-    # ✅ Addition: Pre-merge intersecting blocks (smallest start line becomes parent)
+    # Pre-merge intersecting blocks (smallest start line becomes parent).
     meta_data = merge_overlapping_blocks(meta_data)
 
-    # Initialize the components field for each item
-    for key, item in meta_data.items():
-        if 'components' not in item:  # Skip if already merged
-            item['components'] = {}
-
-    nested_item_keys = set()
-    # ✅ Build IntervalTree
+    # Build the interval tree and cache (start, end) ranges in a single pass.
+    # Each entry uses a half-open interval [start, end+1) per IntervalTree's API.
     tree = IntervalTree()
+    ranges = {}
     for key, item in meta_data.items():
-        start_line = item.get('block_start', 0) #item.get('start_line', 0)
-        end_line = item.get('block_end', start_line) #item.get('end_line', start_line)
+        item.setdefault('components', {})
+        start = item.get('block_start', 0)
+        end = item.get('block_end', start)
+        ranges[key] = (start, end)
+        tree[start:end + 1] = (key, item)
 
-        # Register as half-open interval [start, end+1) (IntervalTree specification)
-        tree[start_line:end_line+1] = (key, item)
-    
-    # ✅ Fast containment search for each item
+    # For each item, find strictly-contained items via the tree and absorb them
+    # as components. Merge their `uses` into the parent's `uses` (by name).
+    nested_item_keys = set()
     for key, item in meta_data.items():
-        start_line = item.get('block_start', 0)  # item.get('start_line', 0)
-        end_line = item.get('block_end', start_line)  # item.get('end_line', start_line)
+        start_line, end_line = ranges[key]
+        uses_dict = {
+            u.get('name'): u
+            for u in item.get('uses', [])
+            if u.get('name')
+        }
 
-        # Search for items overlapping this range O(log n + k)
-        overlapping = tree[start_line:end_line+1]
-        
-        uses_dict = {use.get('name'): use for use in item.get('uses', []) if use.get('name')}
-        
-        for interval in overlapping:
+        for interval in tree[start_line:end_line + 1]:
             other_key, other_item = interval.data
-            
-            if other_key == key:  # Skip self
-                continue
-            
-            other_start_line = other_item.get('block_start', 0)
-            other_end_line = other_item.get('block_end', other_start_line)
-
-            # Containment check
-            if start_line <= other_start_line and other_end_line <= end_line:
-                if not (start_line == other_start_line and end_line == other_end_line):
-                    if other_key not in item['components']:
-                        item['components'][other_key] = copy.deepcopy(other_item)
-                        nested_item_keys.add(other_key)
-                    
-                    # Merge uses
-                    for other_use in other_item.get('uses', []):
-                        other_use_name = other_use.get('name')
-                        if other_use_name and other_use_name not in uses_dict:
-                            uses_dict[other_use_name] = other_use
-
-        item['uses'] = list(uses_dict.values())
-
-    """
-    # ✅ Fast containment search for each item
-    for key, item in meta_data.items():
-        start_line = item.get('block_start', 0)  # item.get('start_line', 0)
-        end_line = item.get('block_end', start_line)  # item.get('end_line', start_line)
-
-        uses_dict = {use.get('name'): use for use in item.get('uses', []) if use.get('name')}
-
-        for other_key, other_item in meta_data.items():
             if other_key == key:
                 continue
-            
-            other_start_line = other_item.get('block_start', 0)
-            other_end_line = other_item.get('block_end', other_start_line) #other_item.get('end_line', other_start_line)
 
+            other_start, other_end = ranges[other_key]
+            # Containment check: other is inside self, and not identical.
+            if not (start_line <= other_start and other_end <= end_line):
+                continue
+            if start_line == other_start and end_line == other_end:
+                continue
 
-            # Containment check
-            if start_line <= other_start_line and other_end_line <= end_line:
-                if not (start_line == other_start_line and end_line == other_end_line):
-                    if other_key not in item['components']:
-                        item['components'][other_key] = copy.deepcopy(other_item) #dict(other_item)
-                        nested_item_keys.add(other_key)
-                    
-                    # Merge uses
-                    for other_use in other_item.get('uses', []):
-                        other_use_name = other_use.get('name')
-                        if other_use_name and other_use_name not in uses_dict:
-                            uses_dict[other_use_name] = other_use
+            if other_key not in item['components']:
+                item['components'][other_key] = other_item #copy.deepcopy(other_item)
+                nested_item_keys.add(other_key)
+
+            for u in other_item.get('uses', []):
+                name = u.get('name')
+                if name and name not in uses_dict:
+                    uses_dict[name] = u
 
         item['uses'] = list(uses_dict.values())
-    """
 
-    # Remove nested elements from the top level
+    # Drop nested items from the top level and sort by block_start.
     top_level_items = {
-        key: item 
-        for key, item in meta_data.items() 
-        if key not in nested_item_keys
+        k: v for k, v in meta_data.items() if k not in nested_item_keys
     }
-    
-    # Sort by block_start
     sorted_top_level_items = dict(
-        sorted(top_level_items.items(), key=lambda x: x[1].get('block_start', 0))
+        sorted(top_level_items.items(), key=lambda kv: kv[1].get('block_start', 0))
     )
 
     write_json(meta_path, sorted_top_level_items)
-    
-    # print(f"Total items: {len(meta_data)}")
-    # print(f"Nested items: {len(nested_item_keys)}")
-    # print(f"Top-level items: {len(top_level_items)}")
-    
     return len(nested_item_keys)
 
 
@@ -6929,6 +6877,135 @@ def make_all_files_writable(target_dir):
     return count
 
 
+
+def make_guard_name(file_path: Path, root: Path | None) -> str:
+    """
+    Build a guard like KRML_TYPES_H_ from a path. Using the path relative
+    to `root` prevents collisions between same-named headers in different
+    directories.
+    """
+    if root is not None:
+        try:
+            rel = file_path.resolve().relative_to(root.resolve())
+        except ValueError:
+            rel = Path(file_path.name)
+    else:
+        rel = Path(file_path.name)
+
+    raw = str(rel).upper()
+    cleaned = re.sub(r"[^A-Z0-9]", "_", raw)
+    cleaned = re.sub(r"_+", "_", cleaned).strip("_")
+    return cleaned + "_"
+
+
+
+def run_pragma_finder(binary: Path, compile_db_dir: Path, output: Path) -> None:
+    """Invoke the pragma_finder binary. Raises on non-zero exit."""
+    cmd = [str(binary), "-p", str(compile_db_dir), "-o", str(output)]
+    print(f"[pragma_finder] running: {' '.join(cmd)}", file=sys.stderr)
+    subprocess.run(cmd, check=True)
+
+
+
+def rewrite_pragma_file(file_path: Path, guard_name: str) -> bool:
+    """
+    Rewrite a single header in place. Returns True if the file was modified.
+
+    Strategy:
+      - Read as bytes to preserve original encoding and line endings.
+      - Strip every #pragma once line in the file (there is usually one,
+        but be defensive).
+      - If no #pragma once was actually present, do nothing (avoids
+        wrapping files that pragma_finder reported but have already been
+        rewritten in a previous run).
+      - Prepend the guard header and append #endif.
+    """
+    data = file_path.read_bytes()
+
+    # Matches a line whose only meaningful content is `#pragma once`.
+    # Allows leading whitespace and trailing comments / whitespace.
+    _PRAGMA_ONCE_LINE = re.compile(
+        rb'^[ \t]*#[ \t]*pragma[ \t]+once[ \t]*(?://[^\n]*|/\*.*?\*/)?[ \t]*\r?\n?',
+        re.MULTILINE | re.DOTALL,
+    )
+
+    new_data, count = _PRAGMA_ONCE_LINE.subn(b"", data)
+    if count == 0:
+        # Nothing to do. Either the file has already been converted in a
+        # previous run, or the reported #pragma was inside something the
+        # regex does not match (e.g. unusual whitespace). Skip rather than
+        # double-wrap.
+        return False
+
+    guard = guard_name.encode("ascii")
+    header = b"#ifndef " + guard + b"\n#define " + guard + b"\n\n"
+    footer = b"\n#endif /* " + guard + b" */\n"
+
+    # Strip a single trailing newline before appending the footer so we
+    # don't accumulate blank lines on repeated edits.
+    if new_data.endswith(b"\n"):
+        new_data = new_data[:-1]
+
+    file_path.write_bytes(header + new_data + footer)
+    return True
+
+
+
+def load_pragma_locations(jsonl_path: Path) -> dict[str, set[int]]:
+    """Parse the JSONL output. Returns {file_path: {line, ...}}."""
+    locations: dict[str, set[int]] = {}
+    with jsonl_path.open() as f:
+        for raw in f:
+            raw = raw.strip()
+            if not raw:
+                continue
+            rec = json.loads(raw)
+            locations.setdefault(rec["file"], set()).add(rec["line"])
+    return locations
+
+
+def tranform_pragma(
+    compile_db_dir: str,
+    database_dir: str,
+    guard_root: str | None = None,
+) -> bool:
+
+    binary = "/root/kiso-parser-macro/pragma_finder/build/pragma-finder"
+    jsonl_output = Path(database_dir) / "pragmas.jsonl"
+
+    #compile_db_dir = Path(compile_db_dir)
+    compile_db_dir = Path(compile_db_dir).absolute()
+    jsonl_output = Path(jsonl_output).absolute()
+
+    guard_root = Path(guard_root) if guard_root else None
+
+    run_pragma_finder(binary, compile_db_dir, jsonl_output)
+
+    locations = load_pragma_locations(jsonl_output)
+    print(f"[convert] {len(locations)} unique files contain #pragma once",
+          file=sys.stderr)
+
+    modified = 0
+    skipped = 0
+    for file_str in sorted(locations):
+        file_path = Path(file_str)
+        if not file_path.is_file():
+            print(f"  skip (missing): {file_path}", file=sys.stderr)
+            skipped += 1
+            continue
+        guard = make_guard_name(file_path, guard_root)
+        if rewrite_pragma_file(file_path, guard):
+            print(f"  rewrote: {file_path}  ({guard})", file=sys.stderr)
+            modified += 1
+        else:
+            print(f"  no-op:   {file_path}", file=sys.stderr)
+            skipped += 1
+
+    print(f"[convert] modified={modified} skipped={skipped}", file=sys.stderr)
+    
+    return modified > 0
+
+
 def parse_all(round_id, macro_finder, target_dir, meta_dir, div_meta_dir, database_dir, build_path, 
                  taken_directive_path, unordered_taken_directive_path, all_directive_path, dep_json_path, is_program_path,  # unordered_taken_directive_path, 
                  all_macros_path, taken_macros_path, guards_path, guarded_macros_path, independent_path, flag_path, const_path,
@@ -6958,6 +7035,18 @@ def parse_all(round_id, macro_finder, target_dir, meta_dir, div_meta_dir, databa
     error_output, std_output = run_script_wo_log(build_path, 10000, True, None, option)
     if error_output is not None:
         raise ValueError(f"Faild to run {build_path} at round {round_id}")
+
+    if round_id == "1":
+        compile_dir, compile_json_path = get_compile_json(target_dir)
+
+        changed = tranform_pragma(compile_dir, database_dir, target_dir)
+        #tranform_pragma("/root/macrust-code/trans_c_0000/Python-3.13.3", "/root/macrust-code/database_0000", "/root/macrust-code/trans_c_0000/Python-3.13.3")
+
+        if changed is True:
+            error_output, std_output = run_script_wo_log(build_path, 10000, True, None, option)
+            if error_output is not None:
+                raise ValueError(f"Faild to run {build_path} at round {round_id}")
+                
 
     if round_id == "1":
         compile_dir, compile_json_path = get_compile_json(target_dir)
