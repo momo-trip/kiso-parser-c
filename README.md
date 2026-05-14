@@ -144,16 +144,6 @@ In addition to macro definitions, expansions, and usage locations, it resolves s
 }
 ```
 
-**Macro classification:**
-
-| kind             | Description                             |
-| ---------------- | --------------------------------------- |
-| `macro`          | Object macro (`#define FOO 42`)         |
-| `macro_function` | Function macro (`#define MAX(a,b) ...`) |
-| `macro_flag`     | Flag macro (`#define DEBUG`)            |
-
-
-
 ### Include Dependency Analysis - include_finder
 
 Analyzes `#include` dependencies of source files.
