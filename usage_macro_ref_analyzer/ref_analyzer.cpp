@@ -218,8 +218,16 @@ public:
         
         if (FER) {
             std::string filePath = getAbsolutePath(FER->getName());
+
+            // ## added ##
+
             unsigned line = SM->getLineNumber(FID, SM->getFileOffset(SpellingLoc));
             unsigned column = SM->getColumnNumber(FID, SM->getFileOffset(SpellingLoc));
+
+            // unsigned line = SM->getLineNumber(FID, SM->getFileOffset(SpellingLoc));
+            // unsigned column = SM->getColumnNumber(FID, SM->getFileOffset(SpellingLoc));
+            
+            // ## ended ##
             
             std::string Result;
             llvm::raw_string_ostream OS(Result);
@@ -237,6 +245,53 @@ public:
         // ended
         
         return "unknown";
+    }
+
+    std::string getMacroTokenPhysicalLocationString(SourceLocation Loc) {
+        if (Loc.isInvalid()) return "unknown";
+
+        SourceLocation FileLoc = SM->getFileLoc(Loc);
+        FileID FID = SM->getFileID(FileLoc);
+
+        OptionalFileEntryRef FER = SM->getFileEntryRefForID(FID);
+        if (!FER) return getOriginalLocationString(Loc);
+
+        std::string filePath = getAbsolutePath(FER->getName());
+
+        unsigned Offset = SM->getFileOffset(FileLoc);
+
+        bool Invalid = false;
+        StringRef Buffer = SM->getBufferData(FID, &Invalid);
+        if (Invalid) return getOriginalLocationString(Loc);
+
+        unsigned scanEnd = Offset;
+
+        if (Offset < Buffer.size()) {
+            if (Buffer[Offset] == '\n') {
+                scanEnd = Offset + 1;
+            } else if (Buffer[Offset] == '\\'
+                    && Offset + 1 < Buffer.size()
+                    && Buffer[Offset + 1] == '\n') {
+                scanEnd = Offset + 2;
+            }
+        }
+
+        unsigned line = 1;
+        unsigned column = 1;
+
+        for (unsigned i = 0; i < scanEnd && i < Buffer.size(); ++i) {
+            if (Buffer[i] == '\n') {
+                line++;
+                column = 1;
+            } else {
+                column++;
+            }
+        }
+
+        std::string Result;
+        llvm::raw_string_ostream OS(Result);
+        OS << filePath << ":" << line << ":" << column;
+        return OS.str();
     }
     
     std::string getFilePath(SourceLocation Loc) {
@@ -425,6 +480,11 @@ public:
         if (!MI) return;
 
         SourceLocation MacroLoc = MacroNameTok.getLocation();
+        
+        // // Skip macro references that arose from another macro's expansion.
+        // // (Record only invocations that are physically written in the source.)
+        // if (MacroLoc.isMacroID()) return;
+
         std::string macroName = MacroNameTok.getIdentifierInfo()->getName().str();
         std::string useLocation = Analyzer.getOriginalLocationString(MacroLoc);
         unsigned expansionRawLoc = MacroLoc.getRawEncoding();
@@ -556,9 +616,47 @@ public:
         auto addUse = [&](const std::string &tokenName,
                           SourceLocation usageLoc,
                           const std::string &pasteExpr) {
+
+            // 
+            auto dumpLine = [&](const char *label, SourceLocation L) {
+                if (L.isInvalid()) return;
+
+                SourceLocation Spell = Analyzer.SM->getSpellingLoc(L);
+                SourceLocation Exp   = Analyzer.SM->getExpansionLoc(L);
+                SourceLocation File  = Analyzer.SM->getFileLoc(L);
+
+                auto printDirect = [&](const char *name, SourceLocation SL) {
+                    PresumedLoc P = Analyzer.SM->getPresumedLoc(SL);
+                    if (P.isValid()) {
+                        llvm::errs() << name << " = "
+                                    << P.getFilename() << ":"
+                                    << P.getLine() << ":"
+                                    << P.getColumn() << "\n";
+                    } else {
+                        llvm::errs() << name << " = unknown\n";
+                    }
+                };
+
+                llvm::errs() << "\n=== " << label << " ===\n";
+                llvm::errs() << "tokenName = " << tokenName << "\n";
+
+                printDirect("orig", L);
+                printDirect("spell", Spell);
+                printDirect("exp", Exp);
+                printDirect("file", File);
+            };
+
+            // if (tokenName == "fatal") {
+            //     llvm::errs() << "[FATAL_DEBUG] usageLoc.raw=" << usageLoc.getRawEncoding()
+            //      << " result=" << ui.usage_location << "\n";
+            // }
+            //
+            
             UseInfo ui;
             ui.name = tokenName;
-            ui.usage_location = Analyzer.getOriginalLocationString(usageLoc);
+            // ui.usage_location = Analyzer.getOriginalLocationString(usageLoc);
+            ui.usage_location = Analyzer.getMacroTokenPhysicalLocationString(usageLoc);
+
             ui.paste_expression = pasteExpr;
 
             // Attempt to resolve as a macro

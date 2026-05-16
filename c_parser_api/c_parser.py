@@ -67,9 +67,9 @@ import multiprocessing
 import time
 from multiprocessing import cpu_count
 import threading
-from pathlib import Path
 from collections import OrderedDict
 import ijson
+import gc
 
 from clang.cindex import (
     Index, 
@@ -132,6 +132,8 @@ MACRO_HOME = "/root/SmartC2Rust/macro"
 TRANS_HOME = "/root/SmartC2Rust/trans"
 C_PARSER_HOME = "/root/kiso-parser-c"
 MACRO_PARSER_HOME = "/root/kiso-parser-macro"
+
+C_EXTS = ['.h', '.c', '.mdh', '.epro', '.pro', '.trm']
 
 LLM_ON = False
 WEIGHT = None
@@ -558,6 +560,18 @@ def get_file_path_from_meta_path(meta_path, meta_dir=None):
         if idx != -1:
             path = path[idx + len(meta_dir.rstrip("/")) + 1:]
 
+    m = re.search(r"_([a-zA-Z0-9]+)$", path)
+    if m:
+        return "/" + path[:m.start()] + "." + m.group(1)
+    return "/" + path
+
+    """
+    path = meta_path.replace(".json", "")
+    if meta_dir:
+        idx = path.find(meta_dir)
+        if idx != -1:
+            path = path[idx + len(meta_dir.rstrip("/")) + 1:]
+
     if path.endswith("_c"):
         return "/" + path[:-2] + ".c"
     elif path.endswith("_h"):
@@ -566,7 +580,7 @@ def get_file_path_from_meta_path(meta_path, meta_dir=None):
         return "/" + path[:-3] + ".sh"
     else:
         return "/" + path
-        
+    """
 
 def get_abs_metadata(c_path, meta_dir, path_flag):
     if not os.path.isabs(c_path):
@@ -844,7 +858,7 @@ def analyze_function(target_dir, meta_dir, dep_json_path, build_dir, database_di
                      ):
     
     # 1st round: parsing # If not split into multiple parts, the line numbers will change
-    parse_all("call", macro_finder, target_dir, meta_dir, div_meta_dir, database_dir, build_path, 
+    parse_all("call", target, macro_finder, target_dir, meta_dir, div_meta_dir, database_dir, build_path, 
                  taken_directive_path, unordered_taken_directive_path, all_directive_path, dep_json_path, is_program_path, 
                  all_macros_path, taken_macros_path, guards_path, guarded_macros_path, independent_path, flag_path, const_path,
                  None, None, global_path)
@@ -1679,7 +1693,7 @@ def p_f(process_function, dir, c_flag, h_flag, *args):
 
 def replace_comments_with_spaces_file(file_path, raw_dir):
 
-    if not (file_path.endswith(".c") or file_path.endswith(".h")):
+    if not file_path.endswith(tuple(C_EXTS)): #not (file_path.endswith(".c") or file_path.endswith(".h")):
         return 
 
     index = Index.create()
@@ -2164,21 +2178,20 @@ def save_all_directives(input_file, unordered_macros_path, macros_path, database
     with open(input_file, 'r', encoding='utf-8') as f:
         raw_lines = f.readlines()
 
-    with open(input_file, 'r', encoding='utf-8') as f:
-        initial_lines = f.readlines()
-
     # ★ Step 2: Completely join continuation lines
     processed_lines = []
     i = 0
     while i < len(raw_lines):
-        line = raw_lines[i].rstrip('\n').rstrip('\r')
+        # line = raw_lines[i].rstrip('\n').rstrip('\r')
+        line = raw_lines[i].rstrip('\r\n')
         
         # ★ For directive lines like [IF], [ELIF], etc.
         #if re.match(r'^\[(IF|ELIF|IFDEF|IFNDEF|ELSE|ENDIF|DEFINED|UNDEFINED)\b', line):
         if re.match(r'^\[(IF|ELIF|IFDEF|IFNDEF|ELSE|ENDIF|DEFINED|UNDEFINED)(?:_\w+)?\]', line):
             while i + 1 < len(raw_lines):
-                next_line = raw_lines[i + 1].rstrip('\n').rstrip('\r')
-                
+                # next_line = raw_lines[i + 1].rstrip('\n').rstrip('\r')
+                next_line = raw_lines[i + 1].rstrip('\r\n')
+
                 if next_line.lstrip() and next_line.lstrip()[0] == '[':
                     break
                 
@@ -2221,6 +2234,10 @@ def save_all_directives(input_file, unordered_macros_path, macros_path, database
         processed_lines.append(line)
         i += 1
     
+    # deallocate raw_lines
+    del raw_lines # added
+    gc.collect() # added
+
     # ★ Step 3: Process the joined lines
     for idx, line in enumerate(processed_lines):
         line = line.strip()
@@ -3699,6 +3716,9 @@ def save_all_directives(input_file, unordered_macros_path, macros_path, database
                 
                 pending_endif = None
 
+    # deallocate processed_lines
+    del processed_lines
+    gc.collect()
 
     ################
     # Insert endif information all at once at the end
@@ -3848,12 +3868,13 @@ def save_all_directives(input_file, unordered_macros_path, macros_path, database
     
     print(f"Saved macro information to: {unordered_macros_path}")
 
+    total_files = len(data["files"])
+    
     with open(macros_path, 'w', encoding='utf-8') as f:
         json.dump(data["macros"], f, indent=4, ensure_ascii=False)
     
     print(f"Saved macro information to: {macros_path}")
 
-    total_files = len(data["files"])
     print(f"\nStatistics:")
     print(f"  Total files: {total_files}")
     
@@ -5569,7 +5590,7 @@ def strip_line_directives_in_dir(target_dir):
 
     processed = []
     failed = []
-    extensions=('.c', '.h')
+    extensions=tuple(C_EXTS) #extensions=('.c', '.h')
 
     # Collect target files
     target_files = []
@@ -6877,6 +6898,256 @@ def make_all_files_writable(target_dir):
 
 
 
+_pending_rewrites_lock = threading.Lock()
+
+
+def add_pending_rewrite(file_path, line, old, new, database_dir):
+    """
+    Append a rewrite entry to pending_rewrites.json.
+    
+    Args:
+        file_path: Target file (absolute path).
+        line: Line number (1-based).
+        old: Substring to replace on that line.
+        new: Replacement string.
+        database_dir: Macrust database directory (where pending_rewrites.json lives).
+    """
+    path = f"{database_dir}/pending_rewrites.json"
+    abs_file = os.path.abspath(file_path)
+
+    with _pending_rewrites_lock:
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except (FileNotFoundError, json.JSONDecodeError):
+            data = {}
+
+        if abs_file not in data:
+            data[abs_file] = []
+
+        data[abs_file].append({
+            "line": int(line),
+            "old": old,
+            "new": new,
+        })
+
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+
+
+def reset_pending_rewrites(database_dir):
+    """Clear pending_rewrites.json at the start of a Macrust run."""
+    path = f"{database_dir}/pending_rewrites.json"
+    if Path(path).exists():
+        Path(path).unlink()
+
+
+
+def record_duplication(src_file, dst_file, database_dir):
+    """Record a file duplication for later re-creation if needed."""
+    path = f"{database_dir}/duplications.json"
+    abs_src = os.path.abspath(src_file)
+    abs_dst = os.path.abspath(dst_file)
+
+    with _pending_rewrites_lock:
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except (FileNotFoundError, json.JSONDecodeError):
+            data = {}
+        data[abs_dst] = abs_src
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+
+
+def reset_duplications(database_dir):
+    path = f"{database_dir}/duplications.json"
+    if Path(path).exists():
+        Path(path).unlink()
+
+
+
+def build_rewrite_plan(database_dir, target_subdir):
+
+    tu_trace_path = f"{database_dir}/tu_traces.jsonl"
+    pending_path = f"{database_dir}/pending_rewrites.json"
+    if not Path(pending_path).exists():
+        print("No pending rewrites; skipping plan generation")
+        return
+
+    with open(pending_path, 'r') as f:
+        pending = json.load(f)
+
+    # Build TU -> set of files it reads
+    tu_to_files = {}
+    with open(tu_trace_path, 'r') as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            d = json.loads(line)
+            tu = d['tu']
+            files = {tu}
+            for edge in d['edges']:
+                files.add(edge['from'])
+                files.add(edge['to'])
+            tu_to_files[tu] = files
+
+    commands = []
+    for tu, files in tu_to_files.items():
+        rewrites = []
+        for f in files:
+            if f in pending:
+                for r in pending[f]:
+                    rewrites.append({
+                        "kind": "line_replace",
+                        "file": f,
+                        "line": r['line'],
+                        "old": r['old'],
+                        "new": r['new'],
+                    })
+        if rewrites:
+            commands.append({
+                "match": {"contains": ["-c", tu]},
+                "rewrites": rewrites,
+            })
+
+    plan_dir = f"/root/macrust-code/plan/{target_subdir}"
+    Path(plan_dir).mkdir(parents=True, exist_ok=True)
+    plan_path = f"{plan_dir}/rewrite_plan.json"
+    with open(plan_path, 'w') as f:
+        json.dump({"commands": commands}, f, indent=2)
+    print(f"Wrote rewrite plan: {plan_path} ({len(commands)} commands)")
+
+    dup_src = f"{database_dir}/duplications.json"
+    if Path(dup_src).exists():
+        shutil.copy2(dup_src, f"{plan_dir}/duplications.json")
+
+
+
+def build_rewrite_plan(database_dir, target):
+    """
+    Convert pending_rewrites.json (file-keyed) to rewrite_plan.json (TU-keyed).
+    Also copy duplications.json into the plan directory.
+    """
+    tu_trace_path = f"{database_dir}/tu_traces.jsonl"
+    pending_path = f"{database_dir}/pending_rewrites.json"
+    if not Path(pending_path).exists():
+        print("No pending rewrites; skipping plan generation")
+        return
+
+    with open(pending_path, 'r') as f:
+        pending = json.load(f)  # {file: [{line, old, new}, ...]}
+
+    # Build TU -> set of files it reads
+    tu_to_files = {}
+    with open(tu_trace_path, 'r') as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            d = json.loads(line)
+            tu = d['tu']
+            files = {tu}
+            for edge in d['edges']:
+                files.add(edge['from'])
+                files.add(edge['to'])
+            tu_to_files[tu] = files
+
+    # Build plan: for each TU, generate a match condition + collect rewrites
+    commands = []
+    for tu, files in tu_to_files.items():
+        rewrites = []
+        for f in files:
+            if f in pending:
+                for r in pending[f]:
+                    rewrites.append({
+                        "kind": "line_replace",
+                        "file": f,
+                        "line": r['line'],
+                        "old": r['old'],
+                        "new": r['new'],
+                    })
+        if rewrites:
+            # Match by basename so both absolute and relative paths work
+            commands.append({
+                "match": {"contains": ["-c", os.path.basename(tu)]},
+                "rewrites": rewrites,
+            })
+
+    # Write to plan dir
+    plan_dir = f"/root/macrust-code/plan/{target}"
+    Path(plan_dir).mkdir(parents=True, exist_ok=True)
+    plan_path = f"{plan_dir}/rewrite_plan.json"
+    with open(plan_path, 'w') as f:
+        json.dump({"commands": commands}, f, indent=2)
+    print(f"Wrote rewrite plan: {plan_path} ({len(commands)} commands)")
+
+    # Copy duplications.json into plan dir
+    dup_src = f"{database_dir}/duplications.json"
+    if Path(dup_src).exists():
+        shutil.copy2(dup_src, f"{plan_dir}/duplications.json")
+        print(f"Copied duplications: {plan_dir}/duplications.json")
+
+
+
+def cleanup_plan(database_dir, target):
+
+    reset_pending_rewrites(database_dir)
+
+    reset_duplications(database_dir)
+
+    delete_file(f"/root/macrust-code/plan/{target}/duplications.json")
+    delete_file(f"/root/macrust-code/plan/{target}/rewrite_plan.json")
+
+
+def protect_modified_files(database_dir):
+    """Protect Macrust-modified files from being overwritten by build."""
+    path = f"{database_dir}/modified_files.json"
+    if not Path(path).exists():
+        return
+    with open(path, 'r') as f:
+        files = json.load(f)
+    
+    count = 0
+    for f in files:
+        if not Path(f).exists():
+            continue
+        # chmod -w
+        try:
+            current = os.stat(f).st_mode
+            os.chmod(f, current & ~(stat.S_IWUSR | stat.S_IWGRP | stat.S_IWOTH))
+        except Exception:
+            pass
+        # chattr +i (against rm)
+        subprocess.run(['chattr', '+i', f], capture_output=True)
+        count += 1
+    print(f"Protected {count} Macrust-modified files")
+
+
+def unprotect_modified_files(database_dir):
+    """Remove protection from Macrust-modified files."""
+    path = f"{database_dir}/modified_files.json"
+    if not Path(path).exists():
+        return
+    with open(path, 'r') as f:
+        files = json.load(f)
+    
+    count = 0
+    for f in files:
+        if not Path(f).exists():
+            continue
+        subprocess.run(['chattr', '-i', f], capture_output=True)
+        try:
+            current = os.stat(f).st_mode
+            os.chmod(f, current | stat.S_IWUSR)
+        except Exception:
+            pass
+        count += 1
+    print(f"Unprotected {count} files")
+
+
+
 def make_guard_name(file_path: Path, root: Path | None) -> str:
     """
     Build a guard like KRML_TYPES_H_ from a path. Using the path relative
@@ -7005,7 +7276,140 @@ def tranform_pragma(
     return modified > 0
 
 
-def parse_all(round_id, macro_finder, target_dir, meta_dir, div_meta_dir, database_dir, build_path, 
+def record_modified_file(file_path, database_dir):
+    """Record a file that Macrust has modified, for later protection."""
+    path = f"{database_dir}/modified_files.json"
+    try:
+        with open(path, 'r') as f:
+            files = set(json.load(f))
+    except (FileNotFoundError, json.JSONDecodeError):
+        files = set()
+    files.add(os.path.abspath(file_path))
+    with open(path, 'w') as f:
+        json.dump(sorted(files), f, indent=2)
+
+def save_to_overlay(file_path, target_dir, database_dir):
+    """Save current state of file_path into overlay_dir."""
+    overlay_dir = f"{database_dir}/overlay"
+    rel = os.path.relpath(file_path, target_dir)
+    overlay_path = os.path.join(overlay_dir, rel)
+    Path(overlay_path).parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(file_path, overlay_path)
+
+
+def apply_overlay(target_dir, database_dir):
+    """Restore all overlay files back to target_dir."""
+    overlay_dir = Path(f"{database_dir}/overlay")
+    if not overlay_dir.is_dir():
+        return
+    count = 0
+    for src in overlay_dir.rglob("*"):
+        if src.is_file():
+            rel = src.relative_to(overlay_dir)
+            dst = Path(target_dir) / rel
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src, dst)
+            count += 1
+    if count > 0:
+        print(f"Re-applied {count} overlay files to {target_dir}")
+
+
+def detect_top_level_uses(gen_macro_usage_meta_path, database_dir, meta_dir): # , top_level_uses_path
+    macro_meta = read_json(gen_macro_usage_meta_path)
+    all_apps = defaultdict(list)
+    top_level_uses = [] #defaultdict(list)
+
+    ## collect appearances
+    # Flatten each macro's appearances into per-file entries.
+    # Appearance string format: "/abs/path/to/file.c:line:col"
+    for macro in macro_meta.get("macros", []):
+        macro_name = macro["name"]
+        macro_def = macro["definition"]
+        for appearance in macro.get("appearances", []):
+            # Parse "path:line:col" by locating the last two colons
+            last_colon = appearance.rfind(":")
+            second_last_colon = appearance.rfind(":", 0, last_colon)
+            if second_last_colon == -1:
+                continue
+            file_path = appearance[:second_last_colon]
+            try:
+                line = int(appearance[second_last_colon + 1:last_colon])
+                col = int(appearance[last_colon + 1:])
+            except ValueError:
+                continue
+
+            all_apps[file_path].append({
+                "macro_name": macro_name,
+                "macro_definition": macro_def,
+                "start_line": line,
+                "start_column": col,
+                "end_line": line,
+            })
+
+    ## collect top level uses
+    # At this point all appearances are grouped per file.
+    # Whether each appearance is actually an orphan (not contained in any
+    # existing definition) is filtered later, against the per-file def metadata.
+    all_apps = dict(all_apps)
+
+    for file_path, file_data in all_apps.items():
+        meta_path = obtain_metadata(file_path, meta_dir, False, True, "def")
+        meta_path = Path(meta_path)
+
+        if not os.path.exists(meta_path):
+            meta_data = {}
+        else:
+            meta_data = read_json(meta_path)
+
+        for target_item in file_data:
+            # Skip if the appearance lies within any existing definition range
+            # (i.e. it is owned by a function/variable/etc., not an orphan).
+            found = False
+            for macro_key, item in meta_data.items():
+                if (item['start_line'] <= target_item['start_line']
+                        and target_item['end_line'] <= item['end_line']):
+                    found = True
+                    break
+
+            if found:
+                continue
+
+            new_macro_key = f"top_level_use:{file_path}:{target_item['start_line']}"
+
+            new_data = {
+                "kind": "top_level_use",
+                "name": "",
+                "definition": "",
+                "start_line": target_item['start_line'],
+                "start_column": target_item['start_column'],
+                "end_line": target_item['end_line'],
+                "block_start": target_item['start_line'],
+                "block_end": target_item['end_line'],
+                "rust_code": {
+                    "file_path": None,
+                    "start_line": None,
+                    "content": None
+                },
+                "uses": []
+            }
+            new_data['uses'].append({
+                "kind": "macro",
+                "name": target_item['macro_name'],
+                "definition": target_item['macro_definition'],
+                "usage_location": f"{file_path}:{target_item['start_line']}:{target_item['start_column']}",
+            })
+
+            meta_data[new_macro_key] = new_data
+
+            top_level_uses.append(new_data)
+
+        write_json(meta_path, meta_data)
+    
+    write_json(f"{database_dir}/top_level_uses.json", top_level_uses)
+
+
+
+def parse_all(round_id, target, macro_finder, target_dir, meta_dir, div_meta_dir, database_dir, build_path, 
                  taken_directive_path, unordered_taken_directive_path, all_directive_path, dep_json_path, is_program_path,  # unordered_taken_directive_path, 
                  all_macros_path, taken_macros_path, guards_path, guarded_macros_path, independent_path, flag_path, const_path,
                  given_compile_dir, given_compile_json_path, global_path):
@@ -7029,11 +7433,14 @@ def parse_all(round_id, macro_finder, target_dir, meta_dir, div_meta_dir, databa
         given_compie_dir = find_compile_commands_json(target_dir)
         copy_file(given_compile_json_path, f"{database_dir}")
 
-    error_output, std_output = run_script_wo_log(build_path, 10000, True, None, option)
-    if error_output is not None:
-        raise ValueError(f"Faild to run {build_path} at round {round_id}")
 
     if round_id == "1":
+        cleanup_plan(database_dir, target)
+
+        error_output, std_output = run_script_wo_log(build_path, 10000, True, None, option)
+        if error_output is not None:
+            raise ValueError(f"Faild to run {build_path} at round {round_id}")
+
         compile_dir, compile_json_path = get_compile_json(target_dir)
 
         changed = tranform_pragma(compile_dir, database_dir, target_dir)
@@ -7045,7 +7452,6 @@ def parse_all(round_id, macro_finder, target_dir, meta_dir, div_meta_dir, databa
                 raise ValueError(f"Faild to run {build_path} at round {round_id}")
                 
 
-    if round_id == "1":
         compile_dir, compile_json_path = get_compile_json(target_dir)
 
         # # Stash the compile_commands.json before modifying sources.
@@ -7063,14 +7469,55 @@ def parse_all(round_id, macro_finder, target_dir, meta_dir, div_meta_dir, databa
         
         try:
             strip_line_directives_in_dir(target_dir)
-            make_all_files_read_only(target_dir)
+            # make_all_files_read_only(target_dir)
+            # protect_modified_files(database_dir)
 
             error_output, std_output = run_script_wo_log(build_path, 10000, True, None, option)
             if error_output is not None:
                 raise ValueError(f"Faild to run {build_path} at round {round_id}")
             
         finally:
-            make_all_files_writable(target_dir)
+            # make_all_files_writable(target_dir)
+            # unprotect_modified_files(database_dir)
+
+            # Restore to the original compile_json_path. The build may have
+            # removed its parent directory (e.g. build/), so recreate it.
+            Path(compile_json_path).parent.mkdir(parents=True, exist_ok=True)
+
+            shutil.copy2(stash_path, compile_json_path)
+            Path(stash_path).unlink()
+
+            # shutil.copy2(stash_path, compile_json_path)
+            # Path(stash_path).unlink()
+    
+
+    else: # round_id != "1":
+        build_rewrite_plan(database_dir, target)
+
+        compile_dir, compile_json_path = get_compile_json(target_dir)
+
+        # # Stash the compile_commands.json before modifying sources.
+        # # The next build (after strip_line) would only record the rebuilt
+        # # files and overwrite the complete record, so we save it now.
+        # stash_path = str(compile_json_path) + ".stash"
+
+        # Place stash under target_dir (outside any build/ that may be wiped),
+        # but remember the original compile_json_path so we restore to the
+        # exact same location later.
+        stash_path = str(Path(target_dir) / "compile_commands.json.stash")
+        shutil.copy2(compile_json_path, stash_path)
+
+        try:
+            # make_all_files_read_only(target_dir)
+            protect_modified_files(database_dir)
+
+            error_output, std_output = run_script_wo_log(build_path, 10000, True, None, option)
+            if error_output is not None:
+                raise ValueError(f"Faild to run {build_path} at round {round_id}")
+ 
+        finally:
+            # make_all_files_writable(target_dir)
+            unprotect_modified_files(database_dir)
 
             # Restore to the original compile_json_path. The build may have
             # removed its parent directory (e.g. build/), so recreate it.
@@ -7202,6 +7649,8 @@ def parse_all(round_id, macro_finder, target_dir, meta_dir, div_meta_dir, databa
 
     write_json(gen_macro_usage_meta_path, macros_usage_data)
 
+    detect_top_level_uses(gen_macro_usage_meta_path, database_dir, meta_dir)
+
     if round_id == "call":
         return
 
@@ -7243,19 +7692,6 @@ def parse_all(round_id, macro_finder, target_dir, meta_dir, div_meta_dir, databa
 
     if round_id != "all":
         combine_with_innermost_conditioned_blocks(all_directive_path, target_dir, database_dir, round_id, div_meta_dir, is_program_path)
-    
-
-    # result_src = subprocess.run(["find", meta_dir, "-name", "*.json"], capture_output=True, text=True)
-    # count_src = len([f for f in result_src.stdout.strip().split("\n") if f])
-    # result_dst = subprocess.run(["find", div_meta_dir, "-name", "*.json"], capture_output=True, text=True)
-    # count_dst = len([f for f in result_dst.stdout.strip().split("\n") if f])
-    # if count_src != count_dst:
-    #     src_files = set(os.path.relpath(f, meta_dir) for f in result_src.stdout.strip().split("\n") if f)
-    #     dst_files = set(os.path.relpath(f, div_meta_dir) for f in result_dst.stdout.strip().split("\n") if f)
-    #     missing = src_files - dst_files
-    #     print(f"DEBUG: Files not copied: {len(missing)}")
-    #     for f in list(missing)[:10]:
-    #         print(f"  - {f}")
 
 
     if round_id in ["4"]: #["1", "2", "3", "4"]:
@@ -7271,6 +7707,11 @@ def parse_all(round_id, macro_finder, target_dir, meta_dir, div_meta_dir, databa
     # define blocks
     # define_blocks(round_id, all_directive_path, guarded_macros_path, target_dir, meta_dir, div_meta_dir, database_dir)  # , raw_dir
 
+    # Reset modified files record
+    modified_files_path = f"{database_dir}/modified_files.json"
+    delete_file(modified_files_path)
+
+    cleanup_plan(database_dir, target)
 
 
 def replace_macro_func_ref(macro_func_path, target_dir, output_dir):
@@ -7683,7 +8124,7 @@ def merge_ranges(ranges):
 
 
 
-def setup_macro_without_transforming(llm_on, macro_finder, target_dir, database_dir, meta_dir, div_meta_dir, build_path, cfg_path, target_path, marker,  
+def setup_macro_without_transforming(llm_on, target, macro_finder, target_dir, database_dir, meta_dir, div_meta_dir, build_path, cfg_path, target_path, marker,  
                             list_path, dep_json_path, custom_headers_dir, custom_json_path, custom_header_path,
                             llm_choice, llm_instance, token_path, chat_dir, all_macros_path, taken_macros_path, 
                             all_directive_path, taken_directive_path, is_program_path, global_path,
@@ -7726,7 +8167,7 @@ def setup_macro_without_transforming(llm_on, macro_finder, target_dir, database_
 
     #---------------------------------------------
     # 1st round: parsing # Line numbers change if not split into multiple rounds
-    parse_all("1", macro_finder, target_dir, meta_dir, div_meta_dir, database_dir, build_path, 
+    parse_all("1", target, macro_finder, target_dir, meta_dir, div_meta_dir, database_dir, build_path, 
                  taken_directive_path, unordered_taken_directive_path, all_directive_path, dep_json_path, is_program_path, 
                  all_macros_path, taken_macros_path, guards_path, guarded_macros_path, independent_path, flag_path, const_path,
                  None, None, global_path)  # , cfg_path
@@ -8125,17 +8566,6 @@ def find_headers(target_dir, database_dir, dep_json_path, compile_dir, compile_j
     database_path = Path(database_dir) / "header.json"
     write_json(str(database_path), metadata)
     print(f"Saved header metadata to: {database_path}")
-    
-
-    # Below this, save header.json to dep_json_path in a different format
-    # [
-    # {
-    #     "including_file": f"{MACRO_HOME}/trans_c_0000/libjpeg-turbo-2.1.0/jfdctflt.c",
-    #     "included_file": [
-    #         f"{MACRO_HOME}/trans_c_0000/libjpeg-turbo-2.1.0/jinclude.h:line:column",
-    #         f"{MACRO_HOME}/trans_c_0000/libjpeg-turbo-2.1.0/jpeglib.h:column",
-    #         f"{MACRO_HOME}/trans_c_0000/libjpeg-turbo-2.1.0/jdct.h:column",
-    # },
 
     # Group by including_file
     deps_by_file = {}
