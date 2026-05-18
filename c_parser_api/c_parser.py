@@ -3869,7 +3869,7 @@ def save_all_directives(input_file, unordered_macros_path, macros_path, database
     print(f"Saved macro information to: {unordered_macros_path}")
 
     total_files = len(data["files"])
-    
+
     with open(macros_path, 'w', encoding='utf-8') as f:
         json.dump(data["macros"], f, indent=4, ensure_ascii=False)
     
@@ -7275,18 +7275,29 @@ def tranform_pragma(
     
     return modified > 0
 
+_modified_files_cache = None
+_modified_files_path = None
+_modified_files_dirty = False
+
 
 def record_modified_file(file_path, database_dir):
     """Record a file that Macrust has modified, for later protection."""
+    global _modified_files_cache, _modified_files_path, _modified_files_dirty
     path = f"{database_dir}/modified_files.json"
-    try:
-        with open(path, 'r') as f:
-            files = set(json.load(f))
-    except (FileNotFoundError, json.JSONDecodeError):
-        files = set()
-    files.add(os.path.abspath(file_path))
-    with open(path, 'w') as f:
-        json.dump(sorted(files), f, indent=2)
+
+    if _modified_files_cache is None or _modified_files_path != path:
+        try:
+            with open(path, 'r') as f:
+                _modified_files_cache = set(json.load(f))
+        except (FileNotFoundError, json.JSONDecodeError):
+            _modified_files_cache = set()
+        _modified_files_path = path
+
+    abs_path = os.path.abspath(file_path)
+    if abs_path not in _modified_files_cache:
+        _modified_files_cache.add(abs_path)
+        _modified_files_dirty = True
+
 
 def save_to_overlay(file_path, target_dir, database_dir):
     """Save current state of file_path into overlay_dir."""
@@ -7409,6 +7420,36 @@ def detect_top_level_uses(gen_macro_usage_meta_path, database_dir, meta_dir): # 
 
 
 
+def strip_cc1_entries(path: str) -> None:
+    """Remove clang -cc1 (frontend) entries from a compile_commands.json file.
+
+    bear and similar tools may record both the driver invocation and the
+    internal frontend invocation (clang -cc1 ...) for a single compilation.
+    libTooling-based tools cannot consume -cc1 entries, so this function
+    keeps only the driver entries and overwrites the file in place.
+    """
+    with open(path) as f:
+        db = json.load(f)
+
+    cleaned = []
+    for entry in db:
+        args = entry.get("arguments")
+        if args is not None:
+            if "-cc1" in args:
+                continue
+        else:
+            cmd = entry.get("command", "")
+            if " -cc1 " in f" {cmd} ":
+                continue
+        cleaned.append(entry)
+
+    with open(path, "w") as f:
+        json.dump(cleaned, f, indent=2)
+
+    print(f"{path}: {len(db)} -> {len(cleaned)} entries")
+
+
+
 def parse_all(round_id, target, macro_finder, target_dir, meta_dir, div_meta_dir, database_dir, build_path, 
                  taken_directive_path, unordered_taken_directive_path, all_directive_path, dep_json_path, is_program_path,  # unordered_taken_directive_path, 
                  all_macros_path, taken_macros_path, guards_path, guarded_macros_path, independent_path, flag_path, const_path,
@@ -7442,6 +7483,7 @@ def parse_all(round_id, target, macro_finder, target_dir, meta_dir, div_meta_dir
             raise ValueError(f"Faild to run {build_path} at round {round_id}")
 
         compile_dir, compile_json_path = get_compile_json(target_dir)
+        strip_cc1_entries(compile_json_path)
 
         changed = tranform_pragma(compile_dir, database_dir, target_dir)
         #tranform_pragma("/root/macrust-code/trans_c_0000/Python-3.13.3", "/root/macrust-code/database_0000", "/root/macrust-code/trans_c_0000/Python-3.13.3")
@@ -7451,8 +7493,8 @@ def parse_all(round_id, target, macro_finder, target_dir, meta_dir, div_meta_dir
             if error_output is not None:
                 raise ValueError(f"Faild to run {build_path} at round {round_id}")
                 
-
         compile_dir, compile_json_path = get_compile_json(target_dir)
+        strip_cc1_entries(compile_json_path)
 
         # # Stash the compile_commands.json before modifying sources.
         # # The next build (after strip_line) would only record the rebuilt
@@ -7532,7 +7574,8 @@ def parse_all(round_id, target, macro_finder, target_dir, meta_dir, div_meta_dir
 
     check_permission(target_dir)
     compile_dir, compile_json_path = get_compile_json(target_dir)
-    # print(target_dir)
+    
+    strip_cc1_entries(compile_json_path)
     # print(compile_json_path)
 
     if round_id == "all":
