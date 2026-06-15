@@ -55,6 +55,7 @@ struct SymbolInfo {
     std::string definitionRef;  // For declarations, the location of the corresponding definition
     unsigned startLine;
     unsigned endLine;
+    bool crossFileLocal = false;
     std::set<std::string> uses;
     std::map<std::string, std::set<std::string>> usage_locations;  // USR -> set of location strings
 };
@@ -436,6 +437,17 @@ std::string classifyVarDecl(VarDecl *VD) {
     return "variable";
 }
 
+// Single predicate shared by the top-level symbols[] loop and the uses[] loop.
+// Local vars are not standalone entities, EXCEPT when they physically live in
+// a different file than their enclosing function (function-body #include,
+// e.g. zlib's inffixed.h) - those must be emitted so per-file metadata
+// has a real entry at the referenced definition location.
+static bool shouldEmitSymbol(const SymbolInfo &info) {
+    if (info.kind == "local_var" || info.kind == "static_local_var") {
+        return info.crossFileLocal;
+    }
+    return true;
+}
 
 class SymbolVisitor : public RecursiveASTVisitor<SymbolVisitor> {
 private:
@@ -461,22 +473,7 @@ public:
         std::string usr = Collector.getUSR(FD);
         if (usr.empty()) return true;
 
-        // added
-        // llvm::errs() << "\n=== VisitFunctionDecl ===\n";
-        // llvm::errs() << "Function name: " << FD->getNameAsString() << "\n";
-        // llvm::errs() << "USR: " << usr << "\n";
-
-        // SourceManager &SM = Collector.Context->getSourceManager();
-        // SourceLocation BeginLoc = FD->getBeginLoc();
-        // SourceLocation FuncNameLoc = FD->getLocation();
-        
-        // llvm::errs() << "BeginLoc raw: " << BeginLoc.getRawEncoding() << "\n";
-        // llvm::errs() << "BeginLoc location: " << Collector.getLocationString(BeginLoc) << "\n";
-        // llvm::errs() << "FuncNameLoc location: " << Collector.getLocationString(FuncNameLoc) << "\n";
-        
-        // ended
-
-        if (!FD->hasBody()) {
+        if (!FD->isThisDeclarationADefinition()) {  //if (!FD->hasBody()) {
             // Prototype declaration
             std::string declLocation = Collector.getLocationString(FD->getLocation());
             std::string declUSR = usr + "#decl@" + declLocation;
@@ -537,7 +534,24 @@ public:
         if (usr.empty()) return true;
     
         std::string varKind = classifyVarDecl(VD);
-    
+
+        // Detect locals introduced by a #include inside a function body:
+        // the variable's physical file differs from its enclosing function's file.
+        bool crossFile = false;
+        if (varKind == "static_local_var" || varKind == "local_var") {
+            const FunctionDecl *EnclosingFD = nullptr;
+            for (const DeclContext *DC = VD->getDeclContext(); DC; DC = DC->getParent()) {
+                if ((EnclosingFD = dyn_cast<FunctionDecl>(DC)))
+                    break;
+            }
+            if (EnclosingFD) {
+                SourceManager &SM = Collector.Context->getSourceManager();
+                FileID varFID = SM.getFileID(SM.getSpellingLoc(VD->getLocation()));
+                FileID fnFID  = SM.getFileID(SM.getSpellingLoc(EnclosingFD->getLocation()));
+                crossFile = (varFID != fnFID);
+            }
+        }
+
         if (varKind == "global_var_decl") {
             // extern declaration: register with #decl@ suffixed USR, same as function_decl and struct_decl
             std::string declLocation = Collector.getLocationString(VD->getLocation());
@@ -558,6 +572,7 @@ public:
     
         Collector.symbols[usr].name = VD->getNameAsString();
         Collector.symbols[usr].kind = varKind;
+        Collector.symbols[usr].crossFileLocal = crossFile;
         Collector.symbols[usr].defLocation = Collector.getLocationString(VD->getLocation());
         Collector.symbols[usr].startLine = Collector.getLineNumber(VD->getLocation());
         Collector.symbols[usr].endLine = Collector.getLineNumber(VD->getEndLoc());
@@ -1221,7 +1236,8 @@ void printAllSymbols() {
     for (auto it = globalSymbols.begin(); it != globalSymbols.end(); ++it) {
         const SymbolInfo &info = it->second;
         
-        if (info.kind == "local_var" || info.kind == "static_local_var") continue;
+        //if (info.kind == "local_var" || info.kind == "static_local_var") continue;
+        if (!shouldEmitSymbol(info)) continue;
         
         if (!first) {
             std::cout << ",\n";
@@ -1258,25 +1274,6 @@ void printAllSymbols() {
         std::cout << "      \"end_line\": " << info.endLine << ",\n";
         std::cout << "      \"uses\": [\n";
 
-
-        // bool firstDep = true;
-        // for (const auto &depUSR : info.uses) {
-
-        //     //const SymbolInfo &dep = globalSymbols[depUSR];
-        //     const SymbolInfo *dep = nullptr;
-        //     if (globalSymbols.count(depUSR)) {
-        //         dep = &globalSymbols[depUSR];
-        //     } else {
-        //         std::string prefix = depUSR + "#decl@";
-        //         for (const auto &s : globalSymbols) {
-        //             if (s.first.rfind(prefix, 0) == 0) {
-        //                 dep = &s.second;
-        //                 break;
-        //             }
-        //         }
-        //     }
-        //     if (!dep) continue;
-
         bool firstDep = true;
         for (const auto &depUSR : info.uses) {
 
@@ -1293,6 +1290,10 @@ void printAllSymbols() {
             }
             if (!dep) continue;
             
+            // Keep symbols[] and uses[] consistent: never emit a reference
+            // whose target has no top-level entry (same predicate as above).
+            if (!shouldEmitSymbol(*dep)) continue;
+
             auto usageIt = info.usage_locations.find(depUSR);
             if (usageIt != info.usage_locations.end() && !usageIt->second.empty()) {
                 for (const auto &loc : usageIt->second) {

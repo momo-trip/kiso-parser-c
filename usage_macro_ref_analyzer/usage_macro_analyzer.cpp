@@ -34,14 +34,12 @@ using namespace clang::tooling;
 
 static std::string g_compileDir;
 
+
 static const std::vector<std::string> DEFAULT_INCLUDE_PATHS = {
     "-resource-dir=/usr/lib/llvm-19/lib/clang/19",
     "-w",
-    "-Wno-incompatible-function-pointer-types", 
+    "-Wno-incompatible-function-pointer-types",
     "-Wno-incompatible-pointer-types",
-    // "-isystem/usr/include/c++/11",
-    // "-isystem/usr/include/aarch64-linux-gnu/c++/11",
-    // "-isystem/usr/include/c++/11/backward",
     "-isystem/usr/include/aarch64-linux-gnu",
     "-isystem/usr/include",
     "-fno-strict-aliasing",
@@ -98,6 +96,8 @@ struct MacroKey {
     }
 };
 
+
+
 struct MacroEntry {
     std::string name;
     std::string definition_location;
@@ -125,7 +125,7 @@ struct MacroDefInfo {
     std::vector<std::string> parameters;
     std::string undef_location;
     const MacroInfo *MI = nullptr;
-    bool isConst = false; 
+    bool isConst = false;
 };
 
 struct PendingASTResolve {
@@ -147,11 +147,11 @@ static std::mutex macrosMutex;
 class MacroAnalyzer {
 public:
     SourceManager *SM;
-    
+
     explicit MacroAnalyzer(SourceManager *SM) : SM(SM) {}
-    
+
     std::string getAbsolutePath(StringRef filename) {
-        // added: Prepend compile_dir to virtual paths such as <built-in> and <command line>
+        // Prepend compile_dir to virtual paths such as <built-in> and <command line>
         std::string name = filename.str();
         if (!name.empty() && name[0] == '<') {
             if (!g_compileDir.empty()) {
@@ -159,7 +159,6 @@ public:
             }
             return name;
         }
-        // ended
 
         std::filesystem::path p(name);
 
@@ -177,31 +176,11 @@ public:
         return p.lexically_normal().string();
     }
 
-    // std::string getAbsolutePath(StringRef filename) {
-
-    //     // added: Prepend compile_dir to virtual paths such as <built-in> and <command line>
-    //     std::string name = filename.str();
-    //     if (!name.empty() && name[0] == '<') {
-    //         if (!g_compileDir.empty()) {
-    //             return g_compileDir + "/" + name;
-    //         }
-    //         return name;
-    //     }
-    //     // ended
-
-    //     std::filesystem::path p(filename.str());
-    //     std::error_code ec;
-    //     if (!p.is_absolute()) {
-    //         p = std::filesystem::absolute(p, ec);
-    //     }
-    //     return p.lexically_normal().string();
-    // }
-    
     std::string getOriginalLocationString(SourceLocation Loc) {
         if (Loc.isInvalid()) return "unknown";
-        
+
         SourceLocation OriginalLoc = Loc;
-        
+
         if (Loc.isMacroID()) {
             SourceLocation CustomOriginal = SM->getOriginalLoc(Loc);
             if (CustomOriginal.isFileID()) {
@@ -211,30 +190,24 @@ public:
             }
         }
 
-        // added: Retrieve the physical location via SpellingLoc, and fall back to PresumedLoc when FileEntryRef retrieval fails
+        // Retrieve the physical location via SpellingLoc, and fall back to PresumedLoc
+        // when FileEntryRef retrieval fails
         SourceLocation SpellingLoc = SM->getSpellingLoc(OriginalLoc);
         FileID FID = SM->getFileID(SpellingLoc);
         OptionalFileEntryRef FER = SM->getFileEntryRefForID(FID);
-        
+
         if (FER) {
             std::string filePath = getAbsolutePath(FER->getName());
-
-            // ## added ##
 
             unsigned line = SM->getLineNumber(FID, SM->getFileOffset(SpellingLoc));
             unsigned column = SM->getColumnNumber(FID, SM->getFileOffset(SpellingLoc));
 
-            // unsigned line = SM->getLineNumber(FID, SM->getFileOffset(SpellingLoc));
-            // unsigned column = SM->getColumnNumber(FID, SM->getFileOffset(SpellingLoc));
-            
-            // ## ended ##
-            
             std::string Result;
             llvm::raw_string_ostream OS(Result);
             OS << filePath << ":" << line << ":" << column;
             return OS.str();
         }
-        
+
         PresumedLoc PLoc = SM->getPresumedLoc(OriginalLoc);
         if (PLoc.isValid()) {
             std::string Result;
@@ -242,8 +215,7 @@ public:
             OS << PLoc.getFilename() << ":" << PLoc.getLine() << ":" << PLoc.getColumn();
             return OS.str();
         }
-        // ended
-        
+
         return "unknown";
     }
 
@@ -293,60 +265,56 @@ public:
         OS << filePath << ":" << line << ":" << column;
         return OS.str();
     }
-    
+
     std::string getFilePath(SourceLocation Loc) {
         if (Loc.isInvalid()) return "";
-        
+
         SourceLocation OriginalLoc = Loc;
         if (Loc.isMacroID()) {
             OriginalLoc = SM->getSpellingLoc(Loc);
         }
-        
+
         FileID FID = SM->getFileID(OriginalLoc);
         OptionalFileEntryRef FER = SM->getFileEntryRefForID(FID);
 
-        // added: Fall back to PresumedLoc when FileEntryRef retrieval fails
+        // Fall back to PresumedLoc when FileEntryRef retrieval fails
         if (FER) {
             return getAbsolutePath(FER->getName());
         }
-        
+
         PresumedLoc PLoc = SM->getPresumedLoc(OriginalLoc);
         if (PLoc.isValid()) {
             return PLoc.getFilename();
         }
-        // ended
-
         return "";
     }
-    
+
     int getLineNumber(SourceLocation Loc) {
         if (Loc.isInvalid()) return 0;
-        
+
         SourceLocation OriginalLoc = Loc;
         if (Loc.isMacroID()) {
             OriginalLoc = SM->getSpellingLoc(Loc);
         }
-        
+
         FileID FID = SM->getFileID(OriginalLoc);
 
-        // added: Fall back to PresumedLoc when FileEntryRef retrieval fails
+        // Fall back to PresumedLoc when FileEntryRef retrieval fails
         OptionalFileEntryRef FER = SM->getFileEntryRefForID(FID);
         if (FER) {
             return SM->getLineNumber(FID, SM->getFileOffset(OriginalLoc));
         }
-        
+
         PresumedLoc PLoc = SM->getPresumedLoc(OriginalLoc);
         if (PLoc.isValid()) {
             return PLoc.getLine();
         }
-        // ended
-        
         return 0;
     }
-    
+
     bool isSystemLocation(SourceLocation Loc) {
         if (Loc.isInvalid()) return true;
-        
+
         SourceLocation OriginalLoc = Loc;
         if (Loc.isMacroID()) {
             OriginalLoc = SM->getOriginalLoc(Loc);
@@ -364,31 +332,30 @@ private:
     Preprocessor &PP;
 
 public:
-    MacroCallback(MacroAnalyzer &Analyzer, Preprocessor &PP) 
+    MacroCallback(MacroAnalyzer &Analyzer, Preprocessor &PP)
         : Analyzer(Analyzer), PP(PP) {}
 
-    
     void MacroDefined(const Token &MacroNameTok, const MacroDirective *MD) override {
         SourceLocation MacroLoc = MacroNameTok.getLocation();
-        
+
         std::string macroName = MacroNameTok.getIdentifierInfo()->getName().str();
         std::string defLocation = Analyzer.getOriginalLocationString(MacroLoc);
-        
+
         const clang::MacroInfo *MI = MD->getMacroInfo();
 
         MacroDefInfo defInfo;
         defInfo.name = macroName;
         defInfo.definition_location = defLocation;
         defInfo.MI = MI;
-        
+
         if (MI) {
             SourceLocation DefStart = MI->getDefinitionLoc();
             SourceLocation DefEnd = MI->getDefinitionEndLoc();
-            
+
             if (DefStart.isValid()) {
                 defInfo.file_path = Analyzer.getFilePath(DefStart);
                 defInfo.start_line = Analyzer.getLineNumber(DefStart);
-                
+
                 if (DefEnd.isValid()) {
                     defInfo.end_line = Analyzer.getLineNumber(DefEnd);
                 } else {
@@ -401,7 +368,7 @@ public:
                 if (!expandedValue.empty()) {
                     expandedValue += " ";
                 }
-                
+
                 if (Tok.is(tok::identifier)) {
                     expandedValue += Tok.getIdentifierInfo()->getName().str();
                 } else if (Tok.is(tok::numeric_constant) || Tok.is(tok::string_literal)) {
@@ -425,13 +392,13 @@ public:
                 defInfo.kind = "macro";
             }
 
-            // added
-            // Token-sequence pattern matching for preliminary is_const determination (bindgen-compatible)
+            // Token-sequence pattern matching for preliminary is_const determination
+            // (bindgen-compatible)
             if (!MI->isFunctionLike() && MI->getNumTokens() > 0) {
                 bool allNumericOrOp = true;
                 bool hasNumeric = false;
                 bool hasFloat = false;
-                bool isSingleString = (MI->getNumTokens() == 1 && 
+                bool isSingleString = (MI->getNumTokens() == 1 &&
                                        MI->tokens()[0].is(tok::string_literal));
 
                 for (const Token &Tok : MI->tokens()) {
@@ -462,14 +429,13 @@ public:
                     defInfo.isConst = true;
                 }
             }
-            // ended
         }
-        
+
         std::lock_guard<std::mutex> lock(macrosMutex);
-        
-        llvm::errs() << "[MacroDefined] " << macroName 
+
+        llvm::errs() << "[MacroDefined] " << macroName
                         << " at " << defLocation << "\n";
-        
+
         macroDefByLocation[defLocation] = defInfo;
         currentActiveMacro[macroName] = defLocation;
     }
@@ -480,10 +446,6 @@ public:
         if (!MI) return;
 
         SourceLocation MacroLoc = MacroNameTok.getLocation();
-        
-        // // Skip macro references that arose from another macro's expansion.
-        // // (Record only invocations that are physically written in the source.)
-        // if (MacroLoc.isMacroID()) return;
 
         std::string macroName = MacroNameTok.getIdentifierInfo()->getName().str();
         std::string useLocation = Analyzer.getOriginalLocationString(MacroLoc);
@@ -491,10 +453,10 @@ public:
 
         std::lock_guard<std::mutex> lock(macrosMutex);
 
+
         auto activeIt = currentActiveMacro.find(macroName);
         if (activeIt == currentActiveMacro.end()) {
-            // External macro (preserve existing logic)
-            // Register with an empty uses pattern
+            // External macro: register with an empty uses pattern
             UsesPattern emptyPattern;
             MacroKey extKey{macroName, "external", emptyPattern};
             if (globalMacros.find(extKey) == globalMacros.end()) {
@@ -504,8 +466,10 @@ public:
                 extEntry.kind = MI->isFunctionLike() ? "macro_function" : "macro";
                 globalMacros[extKey] = extEntry;
             }
+
             globalMacros[extKey].appearances.insert(useLocation);
-            llvm::errs() << "[MacroExpands] " << macroName 
+
+            llvm::errs() << "[MacroExpands] " << macroName
                          << " at " << useLocation << " (external)\n";
             return;
         }
@@ -514,8 +478,6 @@ public:
         auto defIt = macroDefByLocation.find(defLocation);
         if (defIt == macroDefByLocation.end()) return;
         const MacroDefInfo &defInfo = defIt->second;
-
-        // added for ##
 
         // ---- Scan body tokens to build uses ----
         std::vector<UseInfo> uses;
@@ -526,8 +488,8 @@ public:
                 if (Param) paramNames.insert(Param->getName().str());
         }
 
-        // [ADD] Build argument spelling map for ## paste resolution
-        //       (unexpanded args - ## suppresses macro expansion of operands)
+        // Build argument spelling map for ## paste resolution
+        // (unexpanded args - ## suppresses macro expansion of operands)
         std::map<std::string, std::string> argSpellings;
         if (MI->isFunctionLike() && Args) {
             unsigned i = 0;
@@ -546,7 +508,7 @@ public:
             }
         }
 
-        // [ADD] Helper: check if a string is a valid C identifier
+        // Helper: check if a string is a valid C identifier
         auto isValidIdentifier = [](const std::string &s) -> bool {
             if (s.empty()) return false;
             if (!std::isalpha(static_cast<unsigned char>(s[0])) && s[0] != '_') return false;
@@ -556,10 +518,10 @@ public:
             return true;
         };
 
-        // [ADD] Pre-scan to find which token indices are part of a ## chain,
-        //       and compute the leftmost-operand index of each chain.
-        //       pasteLeftOf[idx] = leftmost index of the chain containing this token,
-        //                          or SIZE_MAX if not part of any chain.
+        // Pre-scan to find which token indices are part of a ## chain,
+        // and compute the leftmost-operand index of each chain.
+        // pasteLeftOf[idx] = leftmost index of the chain containing this token,
+        //                    or SIZE_MAX if not part of any chain.
         const auto &TokList = MI->tokens();
         std::vector<size_t> pasteLeftOf(TokList.size(), SIZE_MAX);
         std::map<size_t, std::pair<std::string, std::string>> pasteResults;
@@ -611,50 +573,13 @@ public:
             }
         }
 
-        // [MODIFIED] Helper to add a UseInfo with macro/pending resolution
-        //            (factored out to reuse for both plain identifiers and paste results)
+        // Helper to add a UseInfo with macro/pending resolution
+        // (factored out to reuse for both plain identifiers and paste results)
         auto addUse = [&](const std::string &tokenName,
                           SourceLocation usageLoc,
                           const std::string &pasteExpr) {
-
-            // 
-            auto dumpLine = [&](const char *label, SourceLocation L) {
-                if (L.isInvalid()) return;
-
-                SourceLocation Spell = Analyzer.SM->getSpellingLoc(L);
-                SourceLocation Exp   = Analyzer.SM->getExpansionLoc(L);
-                SourceLocation File  = Analyzer.SM->getFileLoc(L);
-
-                auto printDirect = [&](const char *name, SourceLocation SL) {
-                    PresumedLoc P = Analyzer.SM->getPresumedLoc(SL);
-                    if (P.isValid()) {
-                        llvm::errs() << name << " = "
-                                    << P.getFilename() << ":"
-                                    << P.getLine() << ":"
-                                    << P.getColumn() << "\n";
-                    } else {
-                        llvm::errs() << name << " = unknown\n";
-                    }
-                };
-
-                llvm::errs() << "\n=== " << label << " ===\n";
-                llvm::errs() << "tokenName = " << tokenName << "\n";
-
-                printDirect("orig", L);
-                printDirect("spell", Spell);
-                printDirect("exp", Exp);
-                printDirect("file", File);
-            };
-
-            // if (tokenName == "fatal") {
-            //     llvm::errs() << "[FATAL_DEBUG] usageLoc.raw=" << usageLoc.getRawEncoding()
-            //      << " result=" << ui.usage_location << "\n";
-            // }
-            //
-            
             UseInfo ui;
             ui.name = tokenName;
-            // ui.usage_location = Analyzer.getOriginalLocationString(usageLoc);
             ui.usage_location = Analyzer.getMacroTokenPhysicalLocationString(usageLoc);
 
             ui.paste_expression = pasteExpr;
@@ -691,7 +616,7 @@ public:
                 }
             }
 
-            // Not a macro → defer to AST resolution
+            // Not a macro: defer to AST resolution
             ui.kind = "pending";
             ui.definition = "pending";
             ui.pending_ast_resolve = true;
@@ -704,20 +629,20 @@ public:
             uses.push_back(ui);
         };
 
-        // [MODIFIED] Main scan loop: handle ## chains and plain identifiers
+        // Main scan loop: handle ## chains and plain identifiers
         for (size_t idx = 0; idx < TokList.size(); ++idx) {
             const Token &Tok = TokList[idx];
 
-            // [ADD] If this token starts a ## chain, emit one paste use and skip
+            // If this token starts a ## chain, emit one paste use and skip
             if (pasteLeftOf[idx] == idx) {
                 const auto &pr = pasteResults[idx];
                 addUse(pr.first, Tok.getLocation(), pr.second);
                 continue;
             }
-            // [ADD] Skip middle/right operands of a ## chain (already emitted)
+            // Skip middle/right operands of a ## chain (already emitted)
             if (pasteLeftOf[idx] != SIZE_MAX) continue;
 
-            // Existing logic: plain identifier
+            // Plain identifier
             if (!Tok.is(tok::identifier)) continue;
             const IdentifierInfo *TokII = Tok.getIdentifierInfo();
             if (!TokII) continue;
@@ -727,78 +652,6 @@ public:
 
             addUse(tokenName, Tok.getLocation(), "");
         }
-
-        // // ---- Scan body tokens to build uses ----
-        // std::vector<UseInfo> uses;
-
-        // std::set<std::string> paramNames;
-        // if (MI->isFunctionLike()) {
-        //     for (const IdentifierInfo *Param : MI->params())
-        //         if (Param) paramNames.insert(Param->getName().str());
-        // }
-
-        // for (const Token &Tok : MI->tokens()) {
-        //     if (!Tok.is(tok::identifier)) continue;
-        //     const IdentifierInfo *TokII = Tok.getIdentifierInfo();
-        //     if (!TokII) continue;
-
-        //     std::string tokenName = TokII->getName().str();
-        //     if (paramNames.count(tokenName)) continue;
-
-        //     UseInfo ui;
-        //     ui.name = tokenName;
-        //     ui.usage_location = Analyzer.getOriginalLocationString(Tok.getLocation());
-
-        //     // Attempt to resolve as a macro
-        //     IdentifierInfo *RefII = PP.getIdentifierInfo(tokenName);
-        //     if (RefII && RefII->hasMacroDefinition()) {
-        //         MacroDefinition RefMD = PP.getMacroDefinition(RefII);
-        //         if (RefMD && RefMD.getMacroInfo()) {
-        //             const MacroInfo *RefMI = RefMD.getMacroInfo();
-        //             SourceLocation RefDefLoc = RefMI->getDefinitionLoc();
-        //             std::string refDef = Analyzer.getOriginalLocationString(RefDefLoc);
-
-        //             // Definition points to itself → defer to AST resolution
-        //             if (refDef == defLocation) {
-        //                 ui.kind = "pending";
-        //                 ui.definition = "pending";
-        //                 ui.pending_ast_resolve = true;
-        //                 ui.expansion_raw_loc = expansionRawLoc;
-
-        //                 pendingASTResolves.push_back({
-        //                     macroName, defLocation, tokenName,
-        //                     ui.usage_location, expansionRawLoc, useLocation
-        //                 });
-        //             } else {
-        //                 ui.kind = RefMI->isFunctionLike() ? "macro_function" : "macro";
-        //                 ui.definition = refDef;
-        //                 ui.file_path = Analyzer.getFilePath(RefDefLoc);
-        //                 PresumedLoc sl = Analyzer.SM->getPresumedLoc(RefDefLoc);
-        //                 PresumedLoc el = Analyzer.SM->getPresumedLoc(RefMI->getDefinitionEndLoc());
-        //                 ui.start_line = sl.isValid() ? sl.getLine() : 0;
-        //                 ui.end_line = el.isValid() ? el.getLine() : 0;
-        //             }
-
-        //             uses.push_back(ui);
-        //             continue;
-        //         }
-        //     }
-
-        //     // Not a macro → defer to AST resolution
-        //     ui.kind = "pending";
-        //     ui.definition = "pending";
-        //     ui.pending_ast_resolve = true;
-        //     ui.expansion_raw_loc = expansionRawLoc;
-
-        //     pendingASTResolves.push_back({
-        //         macroName, defLocation, tokenName,
-        //         ui.usage_location, expansionRawLoc, useLocation
-        //     });
-
-        //     uses.push_back(ui);
-        // }
-
-        // ended for ##
 
         // Build the key from the uses pattern
         UsesPattern pattern;
@@ -826,7 +679,7 @@ public:
             globalMacros[key] = entry;
         }
 
-        llvm::errs() << "[MacroExpands] " << macroName 
+        llvm::errs() << "[MacroExpands] " << macroName
                      << " at " << useLocation
                      << " (uses: " << uses.size() << " tokens)\n";
     }
@@ -835,9 +688,9 @@ public:
                         const MacroDirective *Undef) override {
         std::string macroName = MacroNameTok.getIdentifierInfo()->getName().str();
         std::string undefLocation = Analyzer.getOriginalLocationString(MacroNameTok.getLocation());
-        
+
         std::lock_guard<std::mutex> lock(macrosMutex);
-        
+
         // Record the #undef location for the currently active macro definition
         auto it = currentActiveMacro.find(macroName);
         if (it != currentActiveMacro.end()) {
@@ -854,13 +707,13 @@ public:
             }
             currentActiveMacro.erase(it);
         }
-        
-        llvm::errs() << "[MacroUndefined] " << macroName 
+
+        llvm::errs() << "[MacroUndefined] " << macroName
                      << " at " << undefLocation << "\n";
     }
+
 };
 
-// ---- AST Visitor: Resolve pending token definitions via DeclRefExpr ----
 // ---- AST Visitor: Resolve pending token definitions via DeclRefExpr and Decls ----
 class PendingResolveVisitor : public RecursiveASTVisitor<PendingResolveVisitor> {
     ASTContext &Context;
@@ -874,7 +727,7 @@ public:
         std::map<std::pair<unsigned, std::string>, std::pair<std::string, const NamedDecl*>> &R)
         : Context(Ctx), SM(Ctx.getSourceManager()), Analyzer(A), Resolved(R) {}
 
-    // [ADD] Common helper: register a NamedDecl whose name location is inside a macro expansion
+    // Common helper: register a NamedDecl whose name location is inside a macro expansion
     void tryRegisterDecl(const NamedDecl *ND) {
         if (!ND) return;
         SourceLocation Loc = ND->getLocation();
@@ -893,7 +746,7 @@ public:
         Resolved[key] = {declLocStr, ND};
     }
 
-    // [KEEP] Existing handler: identifier references
+    // Identifier references
     bool VisitDeclRefExpr(DeclRefExpr *DRE) {
         SourceLocation Loc = DRE->getLocation();
         if (!Loc.isMacroID()) return true;
@@ -915,7 +768,7 @@ public:
         return true;
     }
 
-    // [ADD] Declaration handlers: catch names introduced by ## paste or other macro expansions
+    // Declaration handlers: catch names introduced by ## paste or other macro expansions
     bool VisitFunctionDecl(FunctionDecl *FD) {
         tryRegisterDecl(FD);
         return true;
@@ -948,45 +801,9 @@ public:
 };
 
 
-// class PendingResolveVisitor : public RecursiveASTVisitor<PendingResolveVisitor> {
-//     ASTContext &Context;
-//     SourceManager &SM;
-//     MacroAnalyzer &Analyzer;
-//     std::map<std::pair<unsigned, std::string>, std::pair<std::string, const NamedDecl*>> &Resolved;
-
-// public:
-//     PendingResolveVisitor(
-//         ASTContext &Ctx, MacroAnalyzer &A,
-//         std::map<std::pair<unsigned, std::string>, std::pair<std::string, const NamedDecl*>> &R)
-//         : Context(Ctx), SM(Ctx.getSourceManager()), Analyzer(A), Resolved(R) {}
-
-//     bool VisitDeclRefExpr(DeclRefExpr *DRE) {
-//         SourceLocation Loc = DRE->getLocation();
-//         if (!Loc.isMacroID()) return true;
-
-//         SourceLocation ExpLoc = SM.getExpansionLoc(Loc);
-//         unsigned rawLoc = ExpLoc.getRawEncoding();
-
-//         const NamedDecl *ND = DRE->getDecl();
-//         if (!ND) return true;
-
-//         std::string tokenName = ND->getNameAsString();
-//         auto key = std::make_pair(rawLoc, tokenName);
-
-//         if (Resolved.find(key) == Resolved.end()) {
-//             SourceLocation DeclLoc = ND->getLocation();
-//             std::string declLocStr = Analyzer.getOriginalLocationString(DeclLoc);
-//             Resolved[key] = {declLocStr, ND};
-//         }
-
-//         return true;
-//     }
-// };
-
-
-class MacroConstEvalVisitor 
+class MacroConstEvalVisitor
     : public RecursiveASTVisitor<MacroConstEvalVisitor> {
-    
+
     typedef RecursiveASTVisitor<MacroConstEvalVisitor> Base;
 
     ASTContext &Context;
@@ -1008,20 +825,19 @@ public:
 
     bool TraverseStmt(Stmt *S) {
         if (!S) return true;
-        
+
         Expr *E = dyn_cast<Expr>(S);
         if (!E)
             return Base::TraverseStmt(S);
-        
+
         SourceLocation Loc = E->getBeginLoc();
-        
+
         if (!Loc.isMacroID())
             return Base::TraverseStmt(S);
-        
+
         SourceLocation ExpansionLoc = SM.getExpansionLoc(Loc);
         unsigned RawLoc = ExpansionLoc.getRawEncoding();
-        
-        // added 
+
         auto It = UseSites.find(RawLoc);
         if (It == UseSites.end())
             return Base::TraverseStmt(S);
@@ -1030,18 +846,18 @@ public:
         SourceLocation EndLoc = E->getEndLoc();
         bool EndInSameMacro = EndLoc.isMacroID() &&
             SM.getExpansionLoc(EndLoc).getRawEncoding() == RawLoc;
-        
+
         if (!EndInSameMacro)
             return Base::TraverseStmt(S);
-        
+
         const std::string &MacroName = It->second.first;
         unsigned DefRawLoc = It->second.second;
-        
+
         if (DefRawLoc == 0) return true;
 
         Expr::EvalResult EvalResult;
         bool IsConst = E->EvaluateAsRValue(EvalResult, Context);
-        
+
         // bindgen-compatible: treat string literals as const
         if (!IsConst) {
             const Expr *Inner = E->IgnoreParens();
@@ -1049,7 +865,7 @@ public:
                 IsConst = true;
             }
         }
-        
+
         // If already evaluated: do not overwrite true with false
         if (EvaluatedLocs.count(RawLoc)) {
             if (IsConst) {
@@ -1061,57 +877,16 @@ public:
             }
             return Base::TraverseStmt(S);
         }
-        
+
         EvaluatedLocs.insert(RawLoc);
-        
+
         auto ResultIt = Results.find(DefRawLoc);
         if (ResultIt == Results.end()) {
             Results[DefRawLoc] = IsConst;
         } else if (!IsConst) {
             ResultIt->second = false;
         }
-        // ended
 
-        // //
-        // if (EvaluatedLocs.count(RawLoc))
-        //     return Base::TraverseStmt(S);
-        
-        // auto It = UseSites.find(RawLoc);
-        // if (It == UseSites.end())
-        //     return Base::TraverseStmt(S);
-
-        // SourceLocation EndLoc = E->getEndLoc();
-        // bool EndInSameMacro = EndLoc.isMacroID() &&
-        //     SM.getExpansionLoc(EndLoc).getRawEncoding() == RawLoc;
-        
-        // if (!EndInSameMacro)
-        //     return Base::TraverseStmt(S);
-        
-        // EvaluatedLocs.insert(RawLoc);
-        
-        // const std::string &MacroName = It->second.first;
-        // unsigned DefRawLoc = It->second.second;
-        
-        // if (DefRawLoc == 0) return true;
-
-        // Expr::EvalResult EvalResult;
-        // bool IsConst = E->EvaluateAsRValue(EvalResult, Context);
-        
-        // if (!IsConst) {
-        //     const Expr *Inner = E->IgnoreParens();
-        //     if (isa<StringLiteral>(Inner) || isa<ObjCStringLiteral>(Inner)) {
-        //         IsConst = true;
-        //     }
-        // }
-
-        // auto ResultIt = Results.find(DefRawLoc);
-        // if (ResultIt == Results.end()) {
-        //     Results[DefRawLoc] = IsConst;
-        // } else if (!IsConst) {
-        //     ResultIt->second = false;
-        // }
-        // //
-        
         return true;
     }
 };
@@ -1123,8 +898,8 @@ private:
     Preprocessor &PP;
 
 public:
-    explicit MacroASTConsumer(SourceManager *SM, Preprocessor &PP) 
-        : Analyzer(SM), PP(PP) {
+    explicit MacroASTConsumer(CompilerInstance &CI)
+        : Analyzer(&CI.getSourceManager()), PP(CI.getPreprocessor()) {
         PP.addPPCallbacks(std::make_unique<MacroCallback>(Analyzer, PP));
     }
 
@@ -1195,49 +970,37 @@ public:
             globalMacros = std::move(newGlobalMacros);
         }
 
-        // ---- Phase 2: is_const determination (existing logic) ----
+        // ---- Phase 2: is_const determination ----
         const auto &UseSites = PP.getMacroUseSites();
-        
+
         std::map<unsigned, bool> ConstResults;
 
         MacroConstEvalVisitor Visitor(Context, UseSites, ConstResults);
         Visitor.TraverseDecl(Context.getTranslationUnitDecl());
-        
-        std::lock_guard<std::mutex> lock(macrosMutex);
 
-        llvm::errs() << "=== ConstResults keys ===\n";
-        for (auto &Pair : ConstResults) {
-            llvm::errs() << "  [" << Pair.first << "] = " << (Pair.second ? "true" : "false") << "\n";
-        }
-        llvm::errs() << "=== globalMacros keys (binden_test only) ===\n";
-        for (auto &[key, entry] : globalMacros) {
-            if (entry.file_path.find("binden_test") != std::string::npos) {
-                llvm::errs() << "  [" << key.name << "|" << key.definition_location << "]\n";
-            }
-        }
+        std::lock_guard<std::mutex> lock(macrosMutex);
 
         for (auto &Pair : ConstResults) {
             unsigned defRawLoc = Pair.first;
             SourceLocation DefLoc = SourceLocation::getFromRawEncoding(defRawLoc);
             std::string defLocStr = Analyzer.getOriginalLocationString(DefLoc);
-            
+
             // Find the matching definition in globalMacros
             for (auto &[key, entry] : globalMacros) {
                 if (key.definition_location == defLocStr) {
                     if (entry.kind != "macro_function") {
-                        // If the AST traversal returns true, set true; if false, preserve a prior true from preliminary determination
+                        // If the AST traversal returns true, set true; if false,
+                        // preserve a prior true from preliminary determination
                         if (Pair.second) {
                             entry.isConst = true;
                         }
-                        // If Pair.second == false, do not overwrite a prior true from preliminary determination
-                        //entry.isConst = Pair.second;
                     }
                     break;
                 }
             }
         }
-        
-        llvm::errs() << "Constant evaluation done: " 
+
+        llvm::errs() << "Constant evaluation done: "
                      << ConstResults.size() << " macros evaluated\n";
     }
 };
@@ -1249,11 +1012,7 @@ public:
             std::lock_guard<std::mutex> lock(macrosMutex);
             currentActiveMacro.clear();
         }
-        
-        return std::make_unique<MacroASTConsumer>(
-            &CI.getSourceManager(), 
-            CI.getPreprocessor()
-        );
+        return std::make_unique<MacroASTConsumer>(CI);
     }
 };
 
@@ -1275,15 +1034,15 @@ std::string escapeJSON(const std::string &s) {
 void printMacrosAsJSON() {
     std::cout << "{\n";
     std::cout << "  \"macros\": [\n";
-    
+
     bool first = true;
     for (const auto &[key, info] : globalMacros) {
-        
+
         if (!first) {
             std::cout << ",\n";
         }
         first = false;
-        
+
         std::cout << "    {\n";
         std::cout << "      \"kind\": \"" << info.kind << "\",\n";
         std::cout << "      \"name\": \"" << escapeJSON(info.name) << "\",\n";
@@ -1297,7 +1056,7 @@ void printMacrosAsJSON() {
         std::cout << "      \"is_guard\": false,\n";
         std::cout << "      \"is_guarded\": false,\n";
         std::cout << "      \"expanded_value\": \"" << escapeJSON(info.expanded_value) << "\",\n";
-        
+
         // parameters
         std::cout << "      \"parameters\": [";
         bool firstParam = true;
@@ -1312,16 +1071,22 @@ void printMacrosAsJSON() {
         if (!info.undef_location.empty()) {
             std::cout << "      \"undef\": \"" << escapeJSON(info.undef_location) << "\",\n";
         }
-        
+
         std::cout << "      \"appearances\": [\n";
+
         bool firstAppearance = true;
-        for (const auto &appearance : info.appearances) {
+        for (const auto &loc : info.appearances) {
             if (!firstAppearance) {
                 std::cout << ",\n";
             }
             firstAppearance = false;
-            std::cout << "        \"" << escapeJSON(appearance) << "\"";
+
+            std::cout
+                << "        {\"location\": \""
+                << escapeJSON(loc)
+                << "\"}";
         }
+
         std::cout << "\n      ],\n";
 
         std::cout << "      \"uses\": [\n";
@@ -1344,26 +1109,9 @@ void printMacrosAsJSON() {
             std::cout << "        }";
         }
         std::cout << "\n      ]\n";
-        // std::cout << "      \"uses\": [\n";
-        // bool firstUse = true;
-        // for (const auto &ui : info.uses) {
-        //     if (!firstUse) std::cout << ",\n";
-        //     firstUse = false;
-        //     std::cout << "        {\n";
-        //     std::cout << "          \"kind\": \"" << escapeJSON(ui.kind) << "\",\n";
-        //     std::cout << "          \"name\": \"" << escapeJSON(ui.name) << "\",\n";
-        //     std::cout << "          \"usage_location\": \"" << escapeJSON(ui.usage_location) << "\",\n";
-        //     std::cout << "          \"definition\": \"" << escapeJSON(ui.definition) << "\",\n";
-        //     std::cout << "          \"start_line\": " << ui.start_line << ",\n";
-        //     std::cout << "          \"end_line\": " << ui.end_line << ",\n";
-        //     std::cout << "          \"file_path\": \"" << escapeJSON(ui.file_path) << "\"\n";
-        //     std::cout << "        }";
-        // }
-        // std::cout << "\n      ]\n";
-        
         std::cout << "    }";
     }
-    
+
     std::cout << "\n  ]\n";
     std::cout << "}\n";
 }
@@ -1373,7 +1121,7 @@ void addCustomIncludePaths(ClangTool &Tool) {
     Tool.appendArgumentsAdjuster(
       [](const CommandLineArguments &Args, StringRef Filename) -> CommandLineArguments {
         CommandLineArguments NewArgs = Args;
-        
+
         std::vector<std::string> CommonArgs = {
           "-resource-dir=/usr/lib/llvm-19/lib/clang/19",
           "-w",
@@ -1382,8 +1130,8 @@ void addCustomIncludePaths(ClangTool &Tool) {
           "-fno-strict-aliasing",
           "-isystem/usr/lib/llvm-19/lib/clang/19/include",
         };
-  
-        if (Filename.ends_with(".cxx") || Filename.ends_with(".cpp") || 
+
+        if (Filename.ends_with(".cxx") || Filename.ends_with(".cpp") ||
             Filename.ends_with(".cc") || Filename.ends_with(".C")) {
 
           std::vector<std::string> CxxArgs = {
@@ -1393,32 +1141,33 @@ void addCustomIncludePaths(ClangTool &Tool) {
           };
           CommonArgs.insert(CommonArgs.end(), CxxArgs.begin(), CxxArgs.end());
         }
-  
+
         CommonArgs.push_back("-isystem/usr/include/aarch64-linux-gnu");
         CommonArgs.push_back("-isystem/usr/include");
-  
+
         NewArgs.insert(NewArgs.begin() + 1, CommonArgs.begin(), CommonArgs.end());
         return NewArgs;
       }
     );
 }
 
-  
+
 static llvm::cl::OptionCategory MyToolCategory("macro analyzer options");
 
 int main(int argc, const char **argv) {
-    
+
+
     if (argc >= 2 && std::string(argv[1]) != "-p") {
         std::vector<std::string> SourcePaths;
         SourcePaths.push_back(argv[1]);
-        
+
         std::vector<std::string> CompileCommands;
         CompileCommands.insert(
             CompileCommands.end(),
             DEFAULT_INCLUDE_PATHS.begin(),
             DEFAULT_INCLUDE_PATHS.end()
         );
-        
+
         bool afterDashes = false;
         for (int i = 2; i < argc; ++i) {
             if (std::string(argv[i]) == "--") {
@@ -1429,49 +1178,49 @@ int main(int argc, const char **argv) {
                 CompileCommands.push_back(argv[i]);
             }
         }
-        
+
         auto Compilations = std::make_unique<FixedCompilationDatabase>(
             ".", CompileCommands);
-        
+
         ClangTool Tool(*Compilations, SourcePaths);
         int result = Tool.run(newFrontendActionFactory<MacroAction>().get());
-        
+
         printMacrosAsJSON();
         return result;
     }
-    
+
     if (argc >= 3 && std::string(argv[1]) == "-p") {
         std::string dirPath = argv[2];
-        
-        // added: setup compile_dir
+
+        // setup compile_dir
         std::filesystem::path absDir = std::filesystem::absolute(dirPath);
         g_compileDir = absDir.lexically_normal().string();
-        // ended
-        
+
         std::string ErrorMessage;
         auto Compilations = CompilationDatabase::autoDetectFromDirectory(dirPath, ErrorMessage);
-        
+
         if (!Compilations) {
             llvm::errs() << "Error: " << ErrorMessage << "\n";
             return 1;
         }
-        
+
         auto AllFiles = Compilations->getAllFiles();
         if (AllFiles.empty()) {
             llvm::errs() << "No source files found in compile_commands.json\n";
             return 1;
         }
-        
+
+
         ClangTool Tool(*Compilations, AllFiles);
 
         addCustomIncludePaths(Tool);
 
         int result = Tool.run(newFrontendActionFactory<MacroAction>().get());
-        
+
         printMacrosAsJSON();
         return result;
     }
-    
+
     auto ExpectedParser = CommonOptionsParser::create(argc, argv, MyToolCategory);
     if (!ExpectedParser) {
         llvm::errs() << ExpectedParser.takeError();
@@ -1479,13 +1228,9 @@ int main(int argc, const char **argv) {
     }
     CommonOptionsParser &OptionsParser = ExpectedParser.get();
     ClangTool Tool(OptionsParser.getCompilations(), OptionsParser.getSourcePathList());
-    
+
     int result = Tool.run(newFrontendActionFactory<MacroAction>().get());
     printMacrosAsJSON();
-    
+
     return result;
 }
-
-/*
-EvaluateAsRValue
-*/

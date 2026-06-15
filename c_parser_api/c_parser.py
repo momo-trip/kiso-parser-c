@@ -127,6 +127,16 @@ from llm_api import (
     save_coverage_report
 )
 
+# from element_api import (
+#     ELEMENT_KEY1,
+#     ELEMENT_KEY2,
+#     ELEMENT_KEY3,
+# )
+
+ELEMENT_KEY1 = "key1"
+ELEMENT_KEY2 = "key2"
+ELEMENT_KEY3 = "key3"
+
 
 MACRO_HOME = "/root/SmartC2Rust/macro"
 TRANS_HOME = "/root/SmartC2Rust/trans"
@@ -137,7 +147,7 @@ C_EXTS = ['.h', '.c', '.mdh', '.epro', '.pro', '.trm']
 
 LLM_ON = False
 WEIGHT = None
-
+BASELINE = True #False
 
 @contextmanager
 def timeout(seconds):
@@ -195,10 +205,8 @@ def check_is_system(file_path, target_dir, dep_map):
     if len(included_by) == 0:
         return False
     
-    # added
     if has_include_next(file_path, dep_map, target_dir):
         return True
-    # ended
     
     for inc_entry in included_by:
         parts = inc_entry.rsplit(":", 2)
@@ -231,9 +239,21 @@ def generate_is_program(target_dir, dep_json_path, is_program_path):
 
 
 
+def is_builtin_path(file_path):
+    """Check if path refers to a compiler built-in or command line."""
+    BUILTIN_MARKERS = ('<built-in>', '<command line>', '<scratch space>')
+    if not file_path:
+        return True
+    base = file_path.rsplit('/', 1)[-1]
+    return base in BUILTIN_MARKERS
+
+
 def is_system_file(use_file, program_files):
     if use_file not in program_files:
         return True
+
+    if is_builtin_path(use_file):
+        return
 
     return False
 
@@ -757,7 +777,6 @@ def search_executable(list_path, meta_dir):
     main_list = [] 
     order = get_files_list(list_path)
 
-    # print(order)
     for file_path in order:
         meta_data, meta_path = get_metadata(file_path, meta_dir, None)
         if meta_data is None:
@@ -769,9 +788,6 @@ def search_executable(list_path, meta_dir):
                 main_entry = {}
                 main_entry = item.copy()
                 main_list.append(main_entry)
-                # break
-        # if executable:
-        #     break
 
     return executable, main_list
 
@@ -941,10 +957,7 @@ def build_graph(callee_path):
     G = nx.DiGraph()
     
     for func_id, func_data in data.items():
-        # if func_id not in related_ids:
-        #     continue
-        
-        if len(func_data['callers']) == 0 and len(func_data['callees']) == 0: # added
+        if len(func_data['callers']) == 0 and len(func_data['callees']) == 0: 
             continue
         G.add_node(func_id, name=func_data["name"])
         
@@ -1816,7 +1829,6 @@ def run_macro_finder(macro_finder, c_file, compile_db_dir, target_dir, output_ha
     target_dir = Path(target_dir)
 
     # Build command line arguments
-    #cmd = [str(macro_finder), str(c_file), "-p", str(target_dir)]
     cmd = [str(macro_finder), str(c_file), "-p", str(compile_db_dir)]
 
     # Display command
@@ -1971,20 +1983,8 @@ def run_finder(macro_finder, target_dir, output_file, compile_json_dir, compile_
             success_count = 0
             fail_count = 0
 
-            """
-            for c_file in c_files:
-                #print(f"  [START] {c_file}", flush=True)
-                if run_macro_finder(macro_finder, c_file, compile_json_dir, target_dir, f):
-                    success_count += 1
-                    #print(f"  [OK] {c_file}", flush=True)
-                else:
-                    fail_count += 1
-                    #print(f"CRASHED on: {c_file}", flush=True)
-                    print(f"CRASHED on: {c_file}")
-                    # Break here if you want to stop on error
-                    # break
-            """
             cmd = [macro_finder, "-p", str(compile_json_dir)]
+
             print(f"  Running: {' '.join(cmd)}")
             result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
 
@@ -2144,6 +2144,30 @@ def put_in_target_dir(file_path, target_dir):
     return file_path
 
 
+def strip_input(line):
+    VAL1 = ""
+    VAL2 = ""
+    VAL3 = ""
+
+    # Order matters: peel from the end (VAL3 is last in the output)
+    m = re.search(rf'\s*\({re.escape(ELEMENT_KEY3)}:\s*(.*?)\)\s*$', line)
+    if m:
+        VAL3 = m.group(1).strip()
+        line = line[:m.start()]
+
+    m = re.search(rf'\s*\({re.escape(ELEMENT_KEY2)}:\s*(.*?)\)\s*$', line)
+    if m:
+        VAL2 = m.group(1).strip()
+        line = line[:m.start()]
+
+    m = re.search(rf'\s*\({re.escape(ELEMENT_KEY1)}:\s*(.*?)\)\s*$', line)
+    if m:
+        VAL1 = m.group(1).strip()
+        line = line[:m.start()]
+
+    return line.rstrip(), VAL1, VAL2, VAL3
+
+
 
 def save_all_directives(input_file, unordered_macros_path, macros_path, database_dir, target_dir, skipped_flag, evaluated_flag):
     """Parse macro-finder output and save to JSON (complete version based on Close information)"""
@@ -2170,6 +2194,7 @@ def save_all_directives(input_file, unordered_macros_path, macros_path, database
         "else" : set(),
         "endif": set()
     }
+    seen_map = {}
     
     if not os.path.exists(input_file):
         return
@@ -2186,7 +2211,6 @@ def save_all_directives(input_file, unordered_macros_path, macros_path, database
         line = raw_lines[i].rstrip('\r\n')
         
         # ★ For directive lines like [IF], [ELIF], etc.
-        #if re.match(r'^\[(IF|ELIF|IFDEF|IFNDEF|ELSE|ENDIF|DEFINED|UNDEFINED)\b', line):
         if re.match(r'^\[(IF|ELIF|IFDEF|IFNDEF|ELSE|ENDIF|DEFINED|UNDEFINED)(?:_\w+)?\]', line):
             while i + 1 < len(raw_lines):
                 # next_line = raw_lines[i + 1].rstrip('\n').rstrip('\r')
@@ -2235,8 +2259,8 @@ def save_all_directives(input_file, unordered_macros_path, macros_path, database
         i += 1
     
     # deallocate raw_lines
-    del raw_lines # added
-    gc.collect() # added
+    del raw_lines 
+    gc.collect()
 
     # ★ Step 3: Process the joined lines
     for idx, line in enumerate(processed_lines):
@@ -2249,9 +2273,12 @@ def save_all_directives(input_file, unordered_macros_path, macros_path, database
             current_file = line.split("Processing:")[1].strip()
             continue
         
+
+        line, VAL1, VAL2, VAL3 = strip_input(line)
+        identifier = f":{VAL1}:{VAL3}"
+
         # Parse [DEFINED] (active)
         if line.startswith("[DEFINED]") and not line.startswith("[DEFINED (skipped)]"):
-            #match = re.match(r'\[DEFINED\] (.+?):(\d+):(\d+):(\d+):(\d+) - (.+)', line)
             match = re.match(r'\[DEFINED\] (.+?):(\d+):(\d+):(\d+):(\d+) - (.+?)(?:\s*->\s*(.+))?$', line)
             if match:
                 #file_path, start_line, start_col, end_line, end_col, macro_name = match.groups()
@@ -2259,12 +2286,9 @@ def save_all_directives(input_file, unordered_macros_path, macros_path, database
                 file_path = get_abs_path(file_path)
                 file_path = put_in_target_dir(file_path, target_dir)
                 
-                entry_key = f"DEFINED:{file_path}:{start_line}:{start_col}:{macro_name}:active"
-                if entry_key in seen_entries["defined"]:
-                    continue
-                seen_entries["defined"].add(entry_key)
-
+                entry_key = f"DEFINED:{file_path}:{start_line}:{start_col}:{macro_name}{identifier}:active"
                 macro_key = f"{macro_name}:{file_path}:{start_line}:{start_col}"
+
                 entry = {
                     "kind": "macro",
                     "type": "DEFINED",
@@ -2277,6 +2301,9 @@ def save_all_directives(input_file, unordered_macros_path, macros_path, database
                     "end_column": int(end_col),
                     "block_start" : int(start_line),
                     "block_end" : int(end_line),
+                    ELEMENT_KEY1: [VAL1],
+                    ELEMENT_KEY2: [VAL2],
+                    ELEMENT_KEY3: [VAL3],
                     "active": True,
                     "skipped": False
                 }
@@ -2284,7 +2311,6 @@ def save_all_directives(input_file, unordered_macros_path, macros_path, database
                 if definition:
                     entry["definition_body"] = definition.strip()
                     
-                
                 if file_path not in data["files"]:
                     data["files"][file_path] = {
                         "defined": [],
@@ -2296,8 +2322,19 @@ def save_all_directives(input_file, unordered_macros_path, macros_path, database
                         "endif": []
                     }
                 
-                data["files"][file_path]["defined"].append(entry)
-                
+                if entry_key not in seen_entries["defined"]:
+                    data["files"][file_path]["defined"].append(entry)
+                    seen_entries["defined"].add(entry_key)
+
+                    if entry_key not in seen_map:
+                        seen_map[entry_key] = entry
+
+                else:
+                    seen_map[entry_key][ELEMENT_KEY1].append(VAL1)
+                    seen_map[entry_key][ELEMENT_KEY2].append(VAL2)
+                    seen_map[entry_key][ELEMENT_KEY3].append(VAL3)
+
+
                 if macro_key not in data["macros"]:
                     data["macros"][macro_key] = {
                         "name": macro_name,
@@ -2307,6 +2344,9 @@ def save_all_directives(input_file, unordered_macros_path, macros_path, database
                             "start_column": int(start_col),
                             "end_line": int(end_line),
                             "end_column": int(end_col),
+                            ELEMENT_KEY1: [VAL1],
+                            ELEMENT_KEY2: [VAL2],
+                            ELEMENT_KEY3: [VAL3],
                             "active": True,
                             "skipped": False,
                             "body": definition.strip() if definition else None
@@ -2318,24 +2358,12 @@ def save_all_directives(input_file, unordered_macros_path, macros_path, database
                         search_key : []
                     }
 
-                """
-                if macro_key not in data["macros"]:
-                    data["macros"][macro_key] = {
-                        "name": macro_name,
-                        "definitions": [],
-                        "uses": []
-                    }
-                
-                data["macros"][macro_key]["definitions"].append({
-                    "file_path": file_path,
-                    "start_line": int(start_line),
-                    "start_column": int(start_col),
-                    "end_line": int(end_line),
-                    "end_column": int(end_col),
-                    "active": True,
-                    "skipped": False
-                })
-                """
+                else:
+                    definition_entry = data["macros"][macro_key]["definition"]
+                    definition_entry[ELEMENT_KEY1].append(VAL1)
+                    definition_entry[ELEMENT_KEY2].append(VAL2)
+                    definition_entry[ELEMENT_KEY3].append(VAL3)
+
         
         # Parse [DEFINED (skipped)] (inactive)
         elif line.startswith("[DEFINED (skipped)]"):
@@ -2345,7 +2373,6 @@ def save_all_directives(input_file, unordered_macros_path, macros_path, database
             if evaluated_flag:
                 continue  # ★ Added this line
 
-            #match = re.match(r'\[DEFINED \(skipped\)\] (.+?):(\d+):(\d+):(\d+):(\d+) - (.+)', line)
             match = re.match(r'\[DEFINED \(skipped\)\] (.+?):(\d+):(\d+):(\d+):(\d+) - (.+?)(?:\s*->\s*(.+))?$', line)
 
             if match:
@@ -2354,11 +2381,7 @@ def save_all_directives(input_file, unordered_macros_path, macros_path, database
                 file_path = get_abs_path(file_path)
                 file_path = put_in_target_dir(file_path, target_dir)
                 
-                entry_key = f"DEFINED:{file_path}:{start_line}:{start_col}:{macro_name}:skipped"
-                if entry_key in seen_entries["defined"]:
-                    continue
-                seen_entries["defined"].add(entry_key)
-
+                entry_key = f"DEFINED:{file_path}:{start_line}:{start_col}:{macro_name}{identifier}:skipped"
                 macro_key = f"{macro_name}:{file_path}:{start_line}:{start_col}"
                 entry = {
                     "kind": "macro",
@@ -2372,6 +2395,9 @@ def save_all_directives(input_file, unordered_macros_path, macros_path, database
                     "end_column": int(end_col),
                     "block_start" : int(start_line),
                     "block_end" : int(end_line),
+                    ELEMENT_KEY1: [VAL1],
+                    ELEMENT_KEY2: [VAL2],
+                    ELEMENT_KEY3: [VAL3],
                     "active": False,
                     "skipped": True
                 }
@@ -2390,8 +2416,18 @@ def save_all_directives(input_file, unordered_macros_path, macros_path, database
                         "endif": []
                     }
                 
-                data["files"][file_path]["defined"].append(entry)
-                
+                if entry_key not in seen_entries["defined"]:
+                    data["files"][file_path]["defined"].append(entry)
+                    seen_entries["defined"].add(entry_key)
+
+                    if entry_key not in seen_map:
+                        seen_map[entry_key] = entry
+                    
+                else:
+                    seen_map[entry_key][ELEMENT_KEY1].append(VAL1)
+                    seen_map[entry_key][ELEMENT_KEY2].append(VAL2)
+                    seen_map[entry_key][ELEMENT_KEY3].append(VAL3)
+
                 if macro_key not in data["macros"]:
                     data["macros"][macro_key] = {
                         "name": macro_name,
@@ -2401,6 +2437,9 @@ def save_all_directives(input_file, unordered_macros_path, macros_path, database
                             "start_column": int(start_col),
                             "end_line": int(end_line),
                             "end_column": int(end_col),
+                            ELEMENT_KEY1: [VAL1],
+                            ELEMENT_KEY2: [VAL2],
+                            ELEMENT_KEY3: [VAL3],
                             "active": False,
                             "skipped": True,
                             "body": definition.strip() if definition else None
@@ -2411,25 +2450,12 @@ def save_all_directives(input_file, unordered_macros_path, macros_path, database
                         "is_guarded" : None,
                         search_key : []
                     }
-
-                """
-                if macro_key not in data["macros"]:
-                    data["macros"][macro_key] = {
-                        "name": macro_name,
-                        "definitions": [],
-                        "uses": []
-                    }
                 
-                data["macros"][macro_key]["definitions"].append({
-                    "file_path": file_path,
-                    "start_line": int(start_line),
-                    "start_column": int(start_col),
-                    "end_line": int(end_line),
-                    "end_column": int(end_col),
-                    "active": False,
-                    "skipped": True
-                })
-                """
+                else:
+                    definition_entry = data["macros"][macro_key]["definition"]
+                    definition_entry[ELEMENT_KEY1].append(VAL1)
+                    definition_entry[ELEMENT_KEY2].append(VAL2)
+                    definition_entry[ELEMENT_KEY3].append(VAL3)
         
         # Parse [DEFINED_FUNC] (active)
         elif line.startswith("[DEFINED_FUNC]") and not line.startswith("[DEFINED_FUNC (skipped)]"):
@@ -2442,12 +2468,9 @@ def save_all_directives(input_file, unordered_macros_path, macros_path, database
                 # Extract macro name (up to the parenthesis)
                 macro_name = macro_sig.split('(')[0].strip()
                 
-                entry_key = f"DEFINED_FUNC:{file_path}:{start_line}:{start_col}:{macro_sig}:active"
-                if entry_key in seen_entries["defined"]:
-                    continue
-                seen_entries["defined"].add(entry_key)
-
+                entry_key = f"DEFINED_FUNC:{file_path}:{start_line}:{start_col}:{macro_sig}{identifier}:active"
                 macro_key = f"{macro_name}:{file_path}:{start_line}:{start_col}"
+
                 entry = {
                     "kind": "macro_function",
                     "type": "DEFINED_FUNC",
@@ -2460,6 +2483,9 @@ def save_all_directives(input_file, unordered_macros_path, macros_path, database
                     "end_column": int(end_col),
                     "block_start" : int(start_line),
                     "block_end" : int(end_line),
+                    ELEMENT_KEY1: [VAL1],
+                    ELEMENT_KEY2: [VAL2],
+                    ELEMENT_KEY3: [VAL3],
                     "macro_signature": macro_sig,
                     "active": True,
                     "skipped": False
@@ -2479,8 +2505,19 @@ def save_all_directives(input_file, unordered_macros_path, macros_path, database
                         "endif": []
                     }
                 
-                data["files"][file_path]["defined"].append(entry)
-                
+                if entry_key not in seen_entries["defined"]:
+                    data["files"][file_path]["defined"].append(entry)
+                    seen_entries["defined"].add(entry_key)
+
+                    if entry_key not in seen_map:
+                        seen_map[entry_key] = entry
+                        
+                else:
+                    seen_map[entry_key][ELEMENT_KEY1].append(VAL1)
+                    seen_map[entry_key][ELEMENT_KEY2].append(VAL2)
+                    seen_map[entry_key][ELEMENT_KEY3].append(VAL3)
+
+
                 if macro_key not in data["macros"]:
                     data["macros"][macro_key] = {
                         "name": macro_name,
@@ -2491,6 +2528,9 @@ def save_all_directives(input_file, unordered_macros_path, macros_path, database
                             "start_column": int(start_col),
                             "end_line": int(end_line),
                             "end_column": int(end_col),
+                            ELEMENT_KEY1: [VAL1],
+                            ELEMENT_KEY2: [VAL2],
+                            ELEMENT_KEY3: [VAL3],
                             "active": True,
                             "skipped": False,
                             "body": definition.strip() if definition else None
@@ -2501,27 +2541,12 @@ def save_all_directives(input_file, unordered_macros_path, macros_path, database
                         "is_guarded" : None,
                         search_key : []
                     }
-
-                """
-                if macro_key not in data["macros"]:
-                    data["macros"][macro_key] = {
-                        "name": macro_name,
-                        "signature": macro_sig,
-                        "definitions": [],
-                        "uses": []
-                    }
                 
-                data["macros"][macro_key]["definitions"].append({
-                    "file_path": file_path,
-                    "start_line": int(start_line),
-                    "start_column": int(start_col),
-                    "end_line": int(end_line),
-                    "end_column": int(end_col),
-                    "active": True,
-                    "skipped": False,
-                    "body": definition.strip() if definition else None
-                })
-                """
+                else:
+                    definition_entry = data["macros"][macro_key]["definition"]
+                    definition_entry[ELEMENT_KEY1].append(VAL1)
+                    definition_entry[ELEMENT_KEY2].append(VAL2)
+                    definition_entry[ELEMENT_KEY3].append(VAL3)
 
         # Parse [DEFINED_FUNC (skipped)] (inactive)
         elif line.startswith("[DEFINED_FUNC (skipped)]"):
@@ -2539,12 +2564,9 @@ def save_all_directives(input_file, unordered_macros_path, macros_path, database
                 
                 macro_name = macro_sig.split('(')[0].strip()
                 
-                entry_key = f"DEFINED_FUNC:{file_path}:{start_line}:{start_col}:{macro_sig}:skipped"
-                if entry_key in seen_entries["defined"]:
-                    continue
-                seen_entries["defined"].add(entry_key)
-
+                entry_key = f"DEFINED_FUNC:{file_path}:{start_line}:{start_col}:{macro_sig}{identifier}:skipped"
                 macro_key = f"{macro_name}:{file_path}:{start_line}:{start_col}"
+
                 entry = {
                     "kind": "macro_function",
                     "type": "DEFINED_FUNC",
@@ -2557,6 +2579,9 @@ def save_all_directives(input_file, unordered_macros_path, macros_path, database
                     "end_column": int(end_col),
                     "block_start" : int(start_line),
                     "block_end" : int(end_line),
+                    ELEMENT_KEY1: [VAL1],
+                    ELEMENT_KEY2: [VAL2],
+                    ELEMENT_KEY3: [VAL3],
                     "macro_signature": macro_sig,
                     "active": False,
                     "skipped": True
@@ -2576,8 +2601,19 @@ def save_all_directives(input_file, unordered_macros_path, macros_path, database
                         "endif": []
                     }
                 
-                data["files"][file_path]["defined"].append(entry)
-                
+                if entry_key not in seen_entries["defined"]:
+                    data["files"][file_path]["defined"].append(entry)
+                    seen_entries["defined"].add(entry_key)
+                    
+                    if entry_key not in seen_map:
+                        seen_map[entry_key] = entry
+
+                else:
+                    seen_map[entry_key][ELEMENT_KEY1].append(VAL1)
+                    seen_map[entry_key][ELEMENT_KEY2].append(VAL2)
+                    seen_map[entry_key][ELEMENT_KEY3].append(VAL3)
+    
+
                 if macro_key not in data["macros"]:
                     data["macros"][macro_key] = {
                         "name": macro_name,
@@ -2588,6 +2624,9 @@ def save_all_directives(input_file, unordered_macros_path, macros_path, database
                             "start_column": int(start_col),
                             "end_line": int(end_line),
                             "end_column": int(end_col),
+                            ELEMENT_KEY1: [VAL1],
+                            ELEMENT_KEY2: [VAL2],
+                            ELEMENT_KEY3: [VAL3],
                             "active": False,
                             "skipped": True,
                             "body": definition.strip() if definition else None
@@ -2598,31 +2637,15 @@ def save_all_directives(input_file, unordered_macros_path, macros_path, database
                         "is_guarded" : None,
                         search_key : []
                     }
+                
+                else:
+                    definition_entry = data["macros"][macro_key]["definition"]
+                    definition_entry[ELEMENT_KEY1].append(VAL1)
+                    definition_entry[ELEMENT_KEY2].append(VAL2)
+                    definition_entry[ELEMENT_KEY3].append(VAL3)
 
-                """
-                if macro_key not in data["macros"]:
-                    data["macros"][macro_key] = {
-                        "name": macro_name,
-                        "signature": macro_sig,
-                        "definitions": [],
-                        "uses": []
-                    }
-                
-                data["macros"][macro_key]["definitions"].append({
-                    "file_path": file_path,
-                    "start_line": int(start_line),
-                    "start_column": int(start_col),
-                    "end_line": int(end_line),
-                    "end_column": int(end_col),
-                    "active": False,
-                    "skipped": True,
-                    "body": definition.strip() if definition else None
-                })
-                """
-                
         
         # Parse [IFDEF] (active)
-        #elif line.startswith("[IFDEF]") and not line.startswith("[IFDEF (skipped)]"):
         elif re.match(r'\[IFDEF(?:_TRUE|_FALSE|_FUNC_TRUE|_FUNC_FALSE)?\]', line) and not line.startswith("[IFDEF (skipped)]"):
             #match = re.match(r'\[IFDEF\] (.+?):(\d+):(\d+):(\d+):(\d+) - (.+?) \(defined at: (.+?)\)', line)
             match = re.match(r'\[IFDEF(?:_(TRUE|FALSE|FUNC_TRUE|FUNC_FALSE))?\] (.+?):(\d+):(\d+):(\d+):(\d+) - (.+?) \(defined at: (.+?)\)', line)
@@ -2638,12 +2661,9 @@ def save_all_directives(input_file, unordered_macros_path, macros_path, database
                 file_path = get_abs_path(file_path)
                 file_path = put_in_target_dir(file_path, target_dir)
                 
-                entry_key = f"IFDEF:{file_path}:{start_line}:{start_col}:{macro_name}:{def_loc}:active"
-                if entry_key in seen_entries["ifdef"]:
-                    continue
-                seen_entries["ifdef"].add(entry_key)
-
+                entry_key = f"IFDEF:{file_path}:{start_line}:{start_col}:{macro_name}:{def_loc}{identifier}:active"
                 macro_key = f"{macro_name}:{def_loc}"
+
                 entry = {
                     "kind": "directive",
                     "type": "IFDEF",
@@ -2657,6 +2677,9 @@ def save_all_directives(input_file, unordered_macros_path, macros_path, database
                     "end_column": int(end_col),
                     "block_start" : int(start_line),
                     "block_end" : int(end_line),
+                    ELEMENT_KEY1: [VAL1],
+                    ELEMENT_KEY2: [VAL2],
+                    ELEMENT_KEY3: [VAL3],
                     "active": True,
                     "skipped": False,
                     "evaluated": evaluated
@@ -2673,8 +2696,19 @@ def save_all_directives(input_file, unordered_macros_path, macros_path, database
                         "endif": []
                     }
                 
-                data["files"][file_path]["ifdef"].append(entry)
-                
+                if entry_key not in seen_entries["ifdef"]:
+                    data["files"][file_path]["ifdef"].append(entry)
+                    seen_entries["ifdef"].add(entry_key)
+                    
+                    if entry_key not in seen_map:
+                        seen_map[entry_key] = entry
+                        
+                else:
+                    seen_map[entry_key][ELEMENT_KEY1].append(VAL1)
+                    seen_map[entry_key][ELEMENT_KEY2].append(VAL2)
+                    seen_map[entry_key][ELEMENT_KEY3].append(VAL3)
+
+
                 use_entry = {
                     "kind": "directive",
                     "type": "IFDEF",
@@ -2684,22 +2718,13 @@ def save_all_directives(input_file, unordered_macros_path, macros_path, database
                     "end_line": int(end_line),
                     "end_column": int(end_col),
                     "macro_key": macro_key,
+                    ELEMENT_KEY1: [VAL1],
+                    ELEMENT_KEY2: [VAL2],
+                    ELEMENT_KEY3: [VAL3],
                     "active": True,
                     "skipped": False
                 }
                 
-                """
-                if macro_key in data["macros"]:
-                    data["macros"][macro_key]["uses"].append(use_entry)
-                """
-                """
-                if macro_key not in data["macros"]:
-                    data["macros"][macro_key] = {
-                        "name": macro_name,
-                        "definitions": [],
-                        "uses": []
-                    }
-                """
                 def_file_path, def_line, def_col = parse_def_loc(def_loc)
                 if macro_key not in data["macros"]:
                     data["macros"][macro_key] = {
@@ -2707,7 +2732,10 @@ def save_all_directives(input_file, unordered_macros_path, macros_path, database
                         "definition": {
                             "file_path": def_file_path,
                             "start_line": def_line,
-                            "start_column": def_col
+                            "start_column": def_col,
+                            ELEMENT_KEY1: [VAL1],
+                            ELEMENT_KEY2: [VAL2],
+                            ELEMENT_KEY3: [VAL3],
                         },
                         "is_const" : None,
                         "is_flag" : None,
@@ -2715,14 +2743,18 @@ def save_all_directives(input_file, unordered_macros_path, macros_path, database
                         "is_guarded" : None,
                         search_key : []
                     }
-                data["macros"][macro_key][search_key].append(use_entry)
+                    data["macros"][macro_key][search_key].append(use_entry)
                 
-                # key = f"IFDEF:{file_path}:{start_line}:{start_col}"
-                # if key not in endif_mapping:
-                #     endif_mapping[key] = {}
-                # endif_mapping[key]["use_entry"] = use_entry
-                # endif_mapping[key]["file_entry"] = entry
-        
+                else:
+                    definition_entry = data["macros"][macro_key]["definition"]
+                    definition_entry[ELEMENT_KEY1].append(VAL1)
+                    definition_entry[ELEMENT_KEY2].append(VAL2)
+                    definition_entry[ELEMENT_KEY3].append(VAL3)
+
+                    search_key_entry = data["macros"][macro_key][search_key]
+                    search_key_entry.append(use_entry)
+                
+
         # Parse [IFDEF (skipped)] (inactive)
         elif line.startswith("[IFDEF (skipped)]"):
             if skipped_flag:  # ★ Changed to skipped_flag
@@ -2737,12 +2769,9 @@ def save_all_directives(input_file, unordered_macros_path, macros_path, database
                 file_path = get_abs_path(file_path)
                 file_path = put_in_target_dir(file_path, target_dir)
                 
-                entry_key = f"IFDEF:{file_path}:{start_line}:{start_col}:{macro_name}:{def_loc}:skipped"
-                if entry_key in seen_entries["ifdef"]:
-                    continue
-                seen_entries["ifdef"].add(entry_key)
-
+                entry_key = f"IFDEF:{file_path}:{start_line}:{start_col}:{macro_name}:{def_loc}{identifier}:skipped"
                 macro_key = f"{macro_name}:{def_loc}"
+
                 entry = {
                     "kind": "directive",
                     "type": "IFDEF",
@@ -2756,6 +2785,9 @@ def save_all_directives(input_file, unordered_macros_path, macros_path, database
                     "end_column": int(end_col),
                     "block_start" : int(start_line),
                     "block_end" : int(end_line),
+                    ELEMENT_KEY1: [VAL1],
+                    ELEMENT_KEY2: [VAL2],
+                    ELEMENT_KEY3: [VAL3],
                     "active": False,
                     "skipped": True,
                     "evaluated": False
@@ -2772,8 +2804,19 @@ def save_all_directives(input_file, unordered_macros_path, macros_path, database
                         "endif": []
                     }
                 
-                data["files"][file_path]["ifdef"].append(entry)
-                
+                if entry_key not in seen_entries["ifdef"]:
+                    data["files"][file_path]["ifdef"].append(entry)
+                    seen_entries["ifdef"].add(entry_key)
+
+                    if entry_key not in seen_map:
+                        seen_map[entry_key] = entry
+
+                else:
+                    seen_map[entry_key][ELEMENT_KEY1].append(VAL1)
+                    seen_map[entry_key][ELEMENT_KEY2].append(VAL2)
+                    seen_map[entry_key][ELEMENT_KEY3].append(VAL3)
+
+
                 use_entry = {
                     "kind": "directive",
                     "type": "IFDEF",
@@ -2783,21 +2826,13 @@ def save_all_directives(input_file, unordered_macros_path, macros_path, database
                     "end_line": int(end_line),
                     "end_column": int(end_col),
                     "macro_key": macro_key,
+                    ELEMENT_KEY1: [VAL1],
+                    ELEMENT_KEY2: [VAL2],
+                    ELEMENT_KEY3: [VAL3],
                     "active": False,
                     "skipped": True
                 }
-                """
-                if macro_key in data["macros"]:
-                    data["macros"][macro_key]["uses"].append(use_entry)
-                """
-                """
-                if macro_key not in data["macros"]:
-                    data["macros"][macro_key] = {
-                        "name": macro_name,
-                        "definitions": [],
-                        "uses": []
-                    }
-                """
+
                 def_file_path, def_line, def_col = parse_def_loc(def_loc)
                 if macro_key not in data["macros"]:
                     data["macros"][macro_key] = {
@@ -2805,7 +2840,10 @@ def save_all_directives(input_file, unordered_macros_path, macros_path, database
                         "definition": {
                             "file_path": def_file_path,
                             "start_line": def_line,
-                            "start_column": def_col
+                            "start_column": def_col,
+                            ELEMENT_KEY1: [VAL1],
+                            ELEMENT_KEY2: [VAL2],
+                            ELEMENT_KEY3: [VAL3],
                         },
                         "is_const" : None,
                         "is_flag" : None,
@@ -2813,16 +2851,19 @@ def save_all_directives(input_file, unordered_macros_path, macros_path, database
                         "is_guarded" : None,
                         search_key : []
                     }
-                data["macros"][macro_key][search_key].append(use_entry)
+                    data["macros"][macro_key][search_key].append(use_entry)
                 
-                # key = f"IFDEF:{file_path}:{start_line}:{start_col}"
-                # if key not in endif_mapping:
-                #     endif_mapping[key] = {}
-                # endif_mapping[key]["use_entry"] = use_entry
-                # endif_mapping[key]["file_entry"] = entry
-        
+                else:
+                    definition_entry = data["macros"][macro_key]["definition"]
+                    definition_entry[ELEMENT_KEY1].append(VAL1)
+                    definition_entry[ELEMENT_KEY2].append(VAL2)
+                    definition_entry[ELEMENT_KEY3].append(VAL3)
+                    
+                    search_key_entry = data["macros"][macro_key][search_key]
+                    search_key_entry.append(use_entry)
+
+
         # Parse [IFNDEF] (active)
-        #elif line.startswith("[IFNDEF]") and not line.startswith("[IFNDEF (skipped)]"):
         elif re.match(r'\[IFNDEF(?:_TRUE|_FALSE)?\]', line) and not line.startswith("[IFNDEF (skipped)]"):
             #match = re.match(r'\[IFNDEF\] (.+?):(\d+):(\d+):(\d+):(\d+) - (.+?) \(defined at: (.+?)\)', line)
             match = re.match(r'\[IFNDEF(?:_(TRUE|FALSE))?\] (.+?):(\d+):(\d+):(\d+):(\d+) - (.+?) \(defined at: (.+?)\)', line)
@@ -2838,11 +2879,7 @@ def save_all_directives(input_file, unordered_macros_path, macros_path, database
                 file_path = get_abs_path(file_path)
                 file_path = put_in_target_dir(file_path, target_dir)
 
-                entry_key = f"IFNDEF:{file_path}:{start_line}:{start_col}:{macro_name}:{def_loc}:active"
-                if entry_key in seen_entries["ifndef"]:
-                    continue
-                seen_entries["ifndef"].add(entry_key)
-                
+                entry_key = f"IFNDEF:{file_path}:{start_line}:{start_col}:{macro_name}:{def_loc}{identifier}:active"
                 macro_key = f"{macro_name}:{def_loc}"
 
                 entry = {
@@ -2858,6 +2895,9 @@ def save_all_directives(input_file, unordered_macros_path, macros_path, database
                     "end_column": int(end_col),
                     "block_start" : int(start_line),
                     "block_end" : int(end_line),
+                    ELEMENT_KEY1: [VAL1],
+                    ELEMENT_KEY2: [VAL2],
+                    ELEMENT_KEY3: [VAL3],
                     "active": True,
                     "skipped": False,
                     "evaluated": evaluated
@@ -2874,8 +2914,19 @@ def save_all_directives(input_file, unordered_macros_path, macros_path, database
                         "endif": []
                     }
                 
-                data["files"][file_path]["ifndef"].append(entry)
+                if entry_key not in seen_entries["ifndef"]:
+                    data["files"][file_path]["ifndef"].append(entry)
+                    seen_entries["ifndef"].add(entry_key)
+
+                    if entry_key not in seen_map:
+                        seen_map[entry_key] = entry
+    
+                else: 
+                    seen_map[entry_key][ELEMENT_KEY1].append(VAL1)
+                    seen_map[entry_key][ELEMENT_KEY2].append(VAL2)
+                    seen_map[entry_key][ELEMENT_KEY3].append(VAL3)
                 
+
                 use_entry = {
                     "kind": "directive",
                     "type": "IFNDEF",
@@ -2885,21 +2936,13 @@ def save_all_directives(input_file, unordered_macros_path, macros_path, database
                     "end_line": int(end_line),
                     "end_column": int(end_col),
                     "macro_key": macro_key,
+                    ELEMENT_KEY1: [VAL1],
+                    ELEMENT_KEY2: [VAL2],
+                    ELEMENT_KEY3: [VAL3],
                     "active": True,
                     "skipped": False
                 }
-                """
-                if macro_key in data["macros"]:
-                    data["macros"][macro_key]["uses"].append(use_entry)
-                """
-                """
-                if macro_key not in data["macros"]:
-                    data["macros"][macro_key] = {
-                        "name": macro_name,
-                        "definitions": [],
-                        "uses": []
-                    }
-                """
+
                 def_file_path, def_line, def_col = parse_def_loc(def_loc)
                 if macro_key not in data["macros"]:
                     data["macros"][macro_key] = {
@@ -2907,7 +2950,10 @@ def save_all_directives(input_file, unordered_macros_path, macros_path, database
                         "definition": {
                             "file_path": def_file_path,
                             "start_line": def_line,
-                            "start_column": def_col
+                            "start_column": def_col,
+                            ELEMENT_KEY1: [VAL1],
+                            ELEMENT_KEY2: [VAL2],
+                            ELEMENT_KEY3: [VAL3],
                         },
                         "is_const" : None,
                         "is_flag" : None,
@@ -2915,15 +2961,18 @@ def save_all_directives(input_file, unordered_macros_path, macros_path, database
                         "is_guarded" : None,
                         search_key : []
                     }
+                    data["macros"][macro_key][search_key].append(use_entry)
                 
-                data["macros"][macro_key][search_key].append(use_entry)
+                else:
+                    definition_entry = data["macros"][macro_key]["definition"]
+                    definition_entry[ELEMENT_KEY1].append(VAL1)
+                    definition_entry[ELEMENT_KEY2].append(VAL2)
+                    definition_entry[ELEMENT_KEY3].append(VAL3)
+                    
+                    search_key_entry = data["macros"][macro_key][search_key]
+                    search_key_entry.append(use_entry)
 
-                # key = f"IFNDEF:{file_path}:{start_line}:{start_col}"
-                # if key not in endif_mapping:
-                #     endif_mapping[key] = {}
-                # endif_mapping[key]["use_entry"] = use_entry
-                # endif_mapping[key]["file_entry"] = entry
-        
+
         # Parse [IFNDEF (skipped)] (inactive)
         elif line.startswith("[IFNDEF (skipped)]"):
             if skipped_flag:  # ★ Changed to skipped_flag
@@ -2938,11 +2987,7 @@ def save_all_directives(input_file, unordered_macros_path, macros_path, database
                 file_path = get_abs_path(file_path)
                 file_path = put_in_target_dir(file_path, target_dir)
                 
-                entry_key = f"IFNDEF:{file_path}:{start_line}:{start_col}:{macro_name}:{def_loc}:skipped"
-                if entry_key in seen_entries["ifndef"]:
-                    continue
-                seen_entries["ifndef"].add(entry_key)
-                
+                entry_key = f"IFNDEF:{file_path}:{start_line}:{start_col}:{macro_name}:{def_loc}{identifier}:skipped"
                 macro_key = f"{macro_name}:{def_loc}"
 
                 entry = {
@@ -2958,6 +3003,9 @@ def save_all_directives(input_file, unordered_macros_path, macros_path, database
                     "end_column": int(end_col),
                     "block_start" : int(start_line),
                     "block_end" : int(end_line),
+                    ELEMENT_KEY1: [VAL1],
+                    ELEMENT_KEY2: [VAL2],
+                    ELEMENT_KEY3: [VAL3],
                     "active": False,
                     "skipped": True,
                     "evaluated": False
@@ -2973,9 +3021,19 @@ def save_all_directives(input_file, unordered_macros_path, macros_path, database
                         "else" : [],
                         "endif": []
                     }
-                
-                data["files"][file_path]["ifndef"].append(entry)
-                
+
+                if entry_key not in seen_entries["ifndef"]:
+                    data["files"][file_path]["ifndef"].append(entry)
+                    seen_entries["ifndef"].add(entry_key)
+
+                    if entry_key not in seen_map:
+                        seen_map[entry_key] = entry
+
+                else:
+                    seen_map[entry_key][ELEMENT_KEY1].append(VAL1)
+                    seen_map[entry_key][ELEMENT_KEY2].append(VAL2)
+                    seen_map[entry_key][ELEMENT_KEY3].append(VAL3)
+
                 use_entry = {
                     "kind": "directive",
                     "type": "IFNDEF",
@@ -2985,21 +3043,13 @@ def save_all_directives(input_file, unordered_macros_path, macros_path, database
                     "end_line": int(end_line),
                     "end_column": int(end_col),
                     "macro_key": macro_key,
+                    ELEMENT_KEY1: [VAL1],
+                    ELEMENT_KEY2: [VAL2],
+                    ELEMENT_KEY3: [VAL3],
                     "active": False,
                     "skipped": True
                 }
-                """
-                if macro_key in data["macros"]:
-                    data["macros"][macro_key]["uses"].append(use_entry)
-                """
-                """
-                if macro_key not in data["macros"]:
-                    data["macros"][macro_key] = {
-                        "name": macro_name,
-                        "definitions": [],
-                        "uses": []
-                    }
-                """
+
                 def_file_path, def_line, def_col = parse_def_loc(def_loc)
                 if macro_key not in data["macros"]:
                     data["macros"][macro_key] = {
@@ -3007,7 +3057,10 @@ def save_all_directives(input_file, unordered_macros_path, macros_path, database
                         "definition": {
                             "file_path": def_file_path,
                             "start_line": def_line,
-                            "start_column": def_col
+                            "start_column": def_col,
+                            ELEMENT_KEY1: [VAL1],
+                            ELEMENT_KEY2: [VAL2],
+                            ELEMENT_KEY3: [VAL3],
                         },
                         "is_const" : None,
                         "is_flag" : None,
@@ -3015,14 +3068,18 @@ def save_all_directives(input_file, unordered_macros_path, macros_path, database
                         "is_guarded" : None,
                         search_key : []
                     }
-                data["macros"][macro_key][search_key].append(use_entry)
+                    data["macros"][macro_key][search_key].append(use_entry)
+
+                else:
+                    definition_entry = data["macros"][macro_key]["definition"]
+                    definition_entry[ELEMENT_KEY1].append(VAL1)
+                    definition_entry[ELEMENT_KEY2].append(VAL2)
+                    definition_entry[ELEMENT_KEY3].append(VAL3)
+
+                    search_key_entry = data["macros"][macro_key][search_key]
+                    search_key_entry.append(use_entry)
                 
-                # key = f"IFNDEF:{file_path}:{start_line}:{start_col}"
-                # if key not in endif_mapping:
-                #     endif_mapping[key] = {}
-                # endif_mapping[key]["use_entry"] = use_entry
-                # endif_mapping[key]["file_entry"] = entry
-        
+
         # Parse [IF] (active)
         #elif line.startswith("[IF]") and not line.startswith("[IF (skipped)]"):
         elif re.match(r'\[IF(?:_TRUE|_FALSE)?\]', line) and not line.startswith("[IF (skipped)]"):
@@ -3042,11 +3099,8 @@ def save_all_directives(input_file, unordered_macros_path, macros_path, database
                 condition = ' '.join(condition.split())
                 
                 macros_key = macros_str if macros_str else ""
-                entry_key = f"IF:{file_path}:{start_line}:{start_col}:{condition}:{macros_key}:active"
-                if entry_key in seen_entries["if"]:
-                    continue
-                seen_entries["if"].add(entry_key)
-
+                entry_key = f"IF:{file_path}:{start_line}:{start_col}:{condition}:{macros_key}{identifier}:active"
+                
                 macros_info = []
                 if macros_str:
                     for macro_part in macros_str.split(';'):
@@ -3071,6 +3125,9 @@ def save_all_directives(input_file, unordered_macros_path, macros_path, database
                     "end_column": int(end_col),
                     "block_start" : int(start_line),
                     "block_end" : int(end_line),
+                    ELEMENT_KEY1: [VAL1],
+                    ELEMENT_KEY2: [VAL2],
+                    ELEMENT_KEY3: [VAL3],
                     "condition": condition,
                     "macros": macros_info,
                     "active": True,
@@ -3089,8 +3146,19 @@ def save_all_directives(input_file, unordered_macros_path, macros_path, database
                         "endif": []
                     }
                 
-                data["files"][file_path]["if"].append(entry)
+                if entry_key not in seen_entries["if"]:
+                    data["files"][file_path]["if"].append(entry)
+                    seen_entries["if"].add(entry_key)
                 
+                    if entry_key not in seen_map:
+                        seen_map[entry_key] = entry
+                    
+                else:
+                    seen_map[entry_key][ELEMENT_KEY1].append(VAL1)
+                    seen_map[entry_key][ELEMENT_KEY2].append(VAL2)
+                    seen_map[entry_key][ELEMENT_KEY3].append(VAL3)
+                    
+
                 for macro_info in macros_info:
                     macro_name = macro_info["name"]
                     def_loc = macro_info["definition"] # defined_at
@@ -3106,22 +3174,13 @@ def save_all_directives(input_file, unordered_macros_path, macros_path, database
                         "end_column": int(end_col),
                         "condition": condition,
                         "macro_key": macro_key,
+                        ELEMENT_KEY1: [VAL1],
+                        ELEMENT_KEY2: [VAL2],
+                        ELEMENT_KEY3: [VAL3],
                         "active": True,
                         "skipped": False
                     }
                     
-                    """
-                    if macro_key in data["macros"]:
-                        data["macros"][macro_key]["uses"].append(use_entry)
-                    """
-                    """
-                    if macro_key not in data["macros"]:
-                        data["macros"][macro_key] = {
-                            "name": macro_name,
-                            "definitions": [],
-                            "uses": []
-                        }
-                    """
                     def_file_path, def_line, def_col = parse_def_loc(def_loc)
                     if macro_key not in data["macros"]:
                         data["macros"][macro_key] = {
@@ -3129,7 +3188,10 @@ def save_all_directives(input_file, unordered_macros_path, macros_path, database
                             "definition": {
                                 "file_path": def_file_path,
                                 "start_line": def_line,
-                                "start_column": def_col
+                                "start_column": def_col,
+                                ELEMENT_KEY1: [VAL1],
+                                ELEMENT_KEY2: [VAL2],
+                                ELEMENT_KEY3: [VAL3],
                             },
                             "is_const" : None,
                             "is_flag" : None,
@@ -3137,7 +3199,17 @@ def save_all_directives(input_file, unordered_macros_path, macros_path, database
                             "is_guarded" : None,
                             search_key: []
                         }
-                    data["macros"][macro_key][search_key].append(use_entry)
+                        data["macros"][macro_key][search_key].append(use_entry)
+
+                    else:
+                        definition_entry = data["macros"][macro_key]["definition"]
+                        definition_entry[ELEMENT_KEY1].append(VAL1)
+                        definition_entry[ELEMENT_KEY2].append(VAL2)
+                        definition_entry[ELEMENT_KEY3].append(VAL3)
+                        
+                        search_key_entry = data["macros"][macro_key][search_key]
+                        search_key_entry.append(use_entry)
+                    
 
                 key = f"IF:{file_path}:{start_line}:{start_col}"
                 if key not in endif_mapping:
@@ -3162,11 +3234,8 @@ def save_all_directives(input_file, unordered_macros_path, macros_path, database
                 condition = ' '.join(condition.split())
                 
                 macros_key = macros_str if macros_str else ""
-                entry_key = f"IF:{file_path}:{start_line}:{start_col}:{condition}:{macros_key}:skipped"
-                if entry_key in seen_entries["if"]:
-                    continue
-                seen_entries["if"].add(entry_key)
-
+                entry_key = f"IF:{file_path}:{start_line}:{start_col}:{condition}:{macros_key}{identifier}:skipped"
+        
                 macros_info = []
                 if macros_str:
                     for macro_part in macros_str.split(';'):
@@ -3191,6 +3260,9 @@ def save_all_directives(input_file, unordered_macros_path, macros_path, database
                     "end_column": int(end_col),
                     "block_start" : int(start_line),
                     "block_end" : int(end_line),
+                    ELEMENT_KEY1: [VAL1],
+                    ELEMENT_KEY2: [VAL2],
+                    ELEMENT_KEY3: [VAL3],
                     "condition": condition,
                     "macros": macros_info,
                     "active": False,
@@ -3209,8 +3281,19 @@ def save_all_directives(input_file, unordered_macros_path, macros_path, database
                         "endif": []
                     }
                 
-                data["files"][file_path]["if"].append(entry)
-                
+                if entry_key not in seen_entries["if"]:
+                    data["files"][file_path]["if"].append(entry)
+                    seen_entries["if"].add(entry_key)
+                    
+                    if entry_key not in seen_map:
+                        seen_map[entry_key] = entry
+                        
+                else:
+                    seen_map[entry_key][ELEMENT_KEY1].append(VAL1)
+                    seen_map[entry_key][ELEMENT_KEY2].append(VAL2)
+                    seen_map[entry_key][ELEMENT_KEY3].append(VAL3)
+                    
+
                 for macro_info in macros_info:
                     macro_name = macro_info["name"]
                     def_loc = macro_info["definition"] # defined_at
@@ -3226,22 +3309,13 @@ def save_all_directives(input_file, unordered_macros_path, macros_path, database
                         "end_column": int(end_col),
                         "condition": condition,
                         "macro_key": macro_key,
+                        ELEMENT_KEY1: [VAL1],
+                        ELEMENT_KEY2: [VAL2],
+                        ELEMENT_KEY3: [VAL3],
                         "active": False,
                         "skipped": True
                     }
                     
-                    """
-                    if macro_key in data["macros"]:
-                        data["macros"][macro_key]["uses"].append(use_entry)
-                    """
-                    """
-                    if macro_key not in data["macros"]:
-                        data["macros"][macro_key] = {
-                            "name": macro_name,
-                            "definitions": [],
-                            "uses": []
-                        }
-                    """
                     def_file_path, def_line, def_col = parse_def_loc(def_loc)
                     if macro_key not in data["macros"]:
                         data["macros"][macro_key] = {
@@ -3249,7 +3323,10 @@ def save_all_directives(input_file, unordered_macros_path, macros_path, database
                             "definition": {
                                 "file_path": def_file_path,
                                 "start_line": def_line,
-                                "start_column": def_col
+                                "start_column": def_col,
+                                ELEMENT_KEY1: [VAL1],
+                                ELEMENT_KEY2: [VAL2],
+                                ELEMENT_KEY3: [VAL3],
                             },
                             "is_const" : None,
                             "is_flag" : None,
@@ -3257,18 +3334,21 @@ def save_all_directives(input_file, unordered_macros_path, macros_path, database
                             "is_guarded" : None,
                             search_key: []
                         }
-                    data["macros"][macro_key][search_key].append(use_entry)
+                        data["macros"][macro_key][search_key].append(use_entry)
+
+                    else:
+                        definition_entry = data["macros"][macro_key]["definition"]
+                        definition_entry[ELEMENT_KEY1].append(VAL1)
+                        definition_entry[ELEMENT_KEY2].append(VAL2)
+                        definition_entry[ELEMENT_KEY3].append(VAL3)
+                        
+                        search_key_entry = data["macros"][macro_key][search_key]
+                        search_key_entry.append(use_entry)
 
                 key = f"IF:{file_path}:{start_line}:{start_col}"
-                # if key not in endif_mapping:
-                #     endif_mapping[key] = {}
-                # endif_mapping[key]["file_entry"] = entry
-                # endif_mapping[key]["macros"] = macros_info
-        
+
         # Parse [ELIF] (active)
-        #elif line.startswith("[ELIF]") and not line.startswith("[ELIF (skipped)]"):
         elif re.match(r'\[ELIF(?:_TRUE|_FALSE|_NOT_EVALUATED)?\]', line) and not line.startswith("[ELIF (skipped)]"):
-            #match = re.match(r'\[ELIF\] (.+?):(\d+):(\d+):(\d+):(\d+) - (.+?)(?:\s+\[(.+?)\]\s*)?$', line)
             match = re.match(r'\[ELIF(?:_(TRUE|FALSE|NOT_EVALUATED))?\] (.+?):(\d+):(\d+):(\d+):(\d+) - (.+?)(?:\s+\[(.+?)\]\s*)?$', line)
 
             if match:
@@ -3285,11 +3365,8 @@ def save_all_directives(input_file, unordered_macros_path, macros_path, database
                 condition = ' '.join(condition.split())
                 
                 macros_key = macros_str if macros_str else ""
-                entry_key = f"ELIF:{file_path}:{start_line}:{start_col}:{condition}:{macros_key}:active"
-                if entry_key in seen_entries["elif"]:
-                    continue
-                seen_entries["elif"].add(entry_key)
-
+                entry_key = f"ELIF:{file_path}:{start_line}:{start_col}:{condition}:{macros_key}{identifier}:active"
+            
                 macros_info = []
                 if macros_str:
                     for macro_part in macros_str.split(';'):
@@ -3314,6 +3391,9 @@ def save_all_directives(input_file, unordered_macros_path, macros_path, database
                     "end_column": int(end_col),
                     "block_start" : int(start_line),
                     "block_end" : int(end_line),
+                    ELEMENT_KEY1: [VAL1],
+                    ELEMENT_KEY2: [VAL2],
+                    ELEMENT_KEY3: [VAL3],
                     "condition": condition,
                     "macros": macros_info,
                     "active": True,
@@ -3331,8 +3411,19 @@ def save_all_directives(input_file, unordered_macros_path, macros_path, database
                         "else" : [],
                         "endif": []
                     }
-                
-                data["files"][file_path]["elif"].append(entry)
+
+                if entry_key not in seen_entries["elif"]:
+                    data["files"][file_path]["elif"].append(entry)
+                    seen_entries["elif"].add(entry_key)
+                    
+                    if entry_key not in seen_map:
+                        seen_map[entry_key] = entry
+                        
+                else:
+                    seen_map[entry_key][ELEMENT_KEY1].append(VAL1)
+                    seen_map[entry_key][ELEMENT_KEY2].append(VAL2)
+                    seen_map[entry_key][ELEMENT_KEY3].append(VAL3)
+
 
                 # ★ Added from here
                 for macro_info in macros_info:
@@ -3350,6 +3441,9 @@ def save_all_directives(input_file, unordered_macros_path, macros_path, database
                         "end_column": int(end_col),
                         "condition": condition,
                         "macro_key": macro_key,
+                        ELEMENT_KEY1: [VAL1],
+                        ELEMENT_KEY2: [VAL2],
+                        ELEMENT_KEY3: [VAL3],
                         "active": True,
                         "skipped": False
                     }
@@ -3361,7 +3455,10 @@ def save_all_directives(input_file, unordered_macros_path, macros_path, database
                             "definition": {
                                 "file_path": def_file_path,
                                 "start_line": def_line,
-                                "start_column": def_col
+                                "start_column": def_col,
+                                ELEMENT_KEY1: [VAL1],
+                                ELEMENT_KEY2: [VAL2],
+                                ELEMENT_KEY3: [VAL3],
                             },
                             "is_const" : None,
                             "is_flag" : None,
@@ -3369,9 +3466,16 @@ def save_all_directives(input_file, unordered_macros_path, macros_path, database
                             "is_guarded" : None,
                             search_key: []
                         }
-                    data["macros"][macro_key][search_key].append(use_entry)
-                # ★ Added up to here
-        
+                        data["macros"][macro_key][search_key].append(use_entry)
+
+                    else:
+                        definition_entry = data["macros"][macro_key]["definition"]
+                        definition_entry[ELEMENT_KEY1].append(VAL1)
+                        definition_entry[ELEMENT_KEY2].append(VAL2)
+                        definition_entry[ELEMENT_KEY3].append(VAL3)
+
+                        search_key_entry = data["macros"][macro_key][search_key]
+                        search_key_entry.append(use_entry)
 
         # Parse [ELIF (skipped)] (inactive)
         elif line.startswith("[ELIF (skipped)]"):
@@ -3390,10 +3494,7 @@ def save_all_directives(input_file, unordered_macros_path, macros_path, database
                 condition = ' '.join(condition.split())
                 
                 macros_key = macros_str if macros_str else ""
-                entry_key = f"ELIF:{file_path}:{start_line}:{start_col}:{condition}:{macros_key}:skipped"
-                if entry_key in seen_entries["elif"]:
-                    continue
-                seen_entries["elif"].add(entry_key)
+                entry_key = f"ELIF:{file_path}:{start_line}:{start_col}:{condition}:{macros_key}{identifier}:skipped"
 
                 macros_info = []
                 if macros_str:
@@ -3419,6 +3520,9 @@ def save_all_directives(input_file, unordered_macros_path, macros_path, database
                     "end_column": int(end_col),
                     "block_start" : int(start_line),
                     "block_end" : int(end_line),
+                    ELEMENT_KEY1: [VAL1],
+                    ELEMENT_KEY2: [VAL2],
+                    ELEMENT_KEY3: [VAL3],
                     "condition": condition,
                     "macros": macros_info,
                     "active": False,
@@ -3437,7 +3541,18 @@ def save_all_directives(input_file, unordered_macros_path, macros_path, database
                         "endif": []
                     }
                 
-                data["files"][file_path]["elif"].append(entry)
+                if entry_key not in seen_entries["elif"]:
+                    data["files"][file_path]["elif"].append(entry)
+                    seen_entries["elif"].add(entry_key)
+
+                    if entry_key not in seen_map:
+                        seen_map[entry_key] = entry
+                        
+                else:
+                    seen_map[entry_key][ELEMENT_KEY1].append(VAL1)
+                    seen_map[entry_key][ELEMENT_KEY2].append(VAL2)
+                    seen_map[entry_key][ELEMENT_KEY3].append(VAL3)
+
 
                 # ★ Added from here
                 for macro_info in macros_info:
@@ -3455,6 +3570,9 @@ def save_all_directives(input_file, unordered_macros_path, macros_path, database
                         "end_column": int(end_col),
                         "condition": condition,
                         "macro_key": macro_key,
+                        ELEMENT_KEY1: [VAL1],
+                        ELEMENT_KEY2: [VAL2],
+                        ELEMENT_KEY3: [VAL3],
                         "active": False,
                         "skipped": True
                     }
@@ -3466,7 +3584,10 @@ def save_all_directives(input_file, unordered_macros_path, macros_path, database
                             "definition": {
                                 "file_path": def_file_path,
                                 "start_line": def_line,
-                                "start_column": def_col
+                                "start_column": def_col,
+                                ELEMENT_KEY1: [VAL1],
+                                ELEMENT_KEY2: [VAL2],
+                                ELEMENT_KEY3: [VAL3],
                             },
                             "is_const" : None,
                             "is_flag" : None,
@@ -3474,9 +3595,18 @@ def save_all_directives(input_file, unordered_macros_path, macros_path, database
                             "is_guarded" : None,
                             search_key: []
                         }
-                    data["macros"][macro_key][search_key].append(use_entry)
-                # ★ Added up to here
-        
+                        data["macros"][macro_key][search_key].append(use_entry)
+
+                    else:
+                        definition_entry = data["macros"][macro_key]["definition"]
+                        definition_entry[ELEMENT_KEY1].append(VAL1)
+                        definition_entry[ELEMENT_KEY2].append(VAL2)
+                        definition_entry[ELEMENT_KEY3].append(VAL3)
+
+                        search_key_entry = data["macros"][macro_key][search_key]
+                        search_key_entry.append(use_entry)
+
+
         # Parse [ELSE_TRUE] (active)
         elif line.startswith("[ELSE_TRUE]"):
             match = re.match(r'\[ELSE_TRUE\] (.+?):(\d+):(\d+):(\d+):(\d+)', line)
@@ -3485,13 +3615,8 @@ def save_all_directives(input_file, unordered_macros_path, macros_path, database
                 file_path = get_abs_path(file_path)
                 file_path = put_in_target_dir(file_path, target_dir)
                 
-                entry_key = f"ELSE:{file_path}:{start_line}:{start_col}:active"
-                if entry_key in seen_entries.get("else", set()):
-                    continue
-                if "else" not in seen_entries:
-                    seen_entries["else"] = set()
-                seen_entries["else"].add(entry_key)
-
+                entry_key = f"ELSE:{file_path}:{start_line}:{start_col}{identifier}:active"
+    
                 entry = {
                     "kind": "directive",
                     "type": "ELSE",
@@ -3502,6 +3627,9 @@ def save_all_directives(input_file, unordered_macros_path, macros_path, database
                     "end_column": int(end_col),
                     "block_start": int(start_line),
                     "block_end": int(end_line),
+                    ELEMENT_KEY1: [VAL1],
+                    ELEMENT_KEY2: [VAL2],
+                    ELEMENT_KEY3: [VAL3],
                     "active": True,
                     "skipped": False,
                     "evaluated": True
@@ -3521,8 +3649,21 @@ def save_all_directives(input_file, unordered_macros_path, macros_path, database
                 if "else" not in data["files"][file_path]:
                     data["files"][file_path]["else"] = []
                 
-                data["files"][file_path]["else"].append(entry)
-        
+                if "else" not in seen_entries:
+                    seen_entries["else"] = set()
+
+                if entry_key not in seen_entries.get("else", set()):
+                    seen_entries["else"].add(entry_key)
+                    data["files"][file_path]["else"].append(entry)
+                    
+                    if entry_key not in seen_map:
+                        seen_map[entry_key] = entry
+
+                else:
+                    seen_map[entry_key][ELEMENT_KEY1].append(VAL1)
+                    seen_map[entry_key][ELEMENT_KEY2].append(VAL2)
+                    seen_map[entry_key][ELEMENT_KEY3].append(VAL3)
+
         # Parse [ELSE_FALSE] (skipped)
         elif line.startswith("[ELSE_FALSE]"):
             if skipped_flag:      # ★ Added
@@ -3537,13 +3678,8 @@ def save_all_directives(input_file, unordered_macros_path, macros_path, database
                 file_path = get_abs_path(file_path)
                 file_path = put_in_target_dir(file_path, target_dir)
 
-                entry_key = f"ELSE:{file_path}:{start_line}:{start_col}:skipped"
-                if entry_key in seen_entries.get("else", set()):
-                    continue
-                if "else" not in seen_entries:
-                    seen_entries["else"] = set()
-                seen_entries["else"].add(entry_key)
-
+                entry_key = f"ELSE:{file_path}:{start_line}:{start_col}{identifier}:skipped"
+            
                 entry = {
                     "kind": "directive",
                     "type": "ELSE",
@@ -3554,6 +3690,9 @@ def save_all_directives(input_file, unordered_macros_path, macros_path, database
                     "end_column": int(end_col),
                     "block_start": int(start_line),
                     "block_end": int(end_line),
+                    ELEMENT_KEY1: [VAL1],
+                    ELEMENT_KEY2: [VAL2],
+                    ELEMENT_KEY3: [VAL3],
                     "active": False,
                     "skipped": True,
                     "evaluated": False
@@ -3573,10 +3712,21 @@ def save_all_directives(input_file, unordered_macros_path, macros_path, database
                 if "else" not in data["files"][file_path]:
                     data["files"][file_path]["else"] = []
                 
-                data["files"][file_path]["else"].append(entry)
-        
-        
-        
+                if "else" not in seen_entries:
+                    seen_entries["else"] = set()
+
+                if entry_key not in seen_entries.get("else", set()):
+                    data["files"][file_path]["else"].append(entry)
+                    seen_entries["else"].add(entry_key)
+
+                    if entry_key not in seen_map:
+                        seen_map[entry_key] = entry
+
+                else:
+                    seen_map[entry_key][ELEMENT_KEY1].append(VAL1)
+                    seen_map[entry_key][ELEMENT_KEY2].append(VAL2)
+                    seen_map[entry_key][ELEMENT_KEY3].append(VAL3)
+
         # Parse [ENDIF] (active & skipped)
         elif line.startswith("[ENDIF]"):
             is_skipped = "(skipped)" in line
@@ -3593,10 +3743,7 @@ def save_all_directives(input_file, unordered_macros_path, macros_path, database
                 endif_file = get_abs_path(endif_file)
                 
                 status = "skipped" if is_skipped else "active"
-                entry_key = f"ENDIF:{endif_file}:{start_line}:{start_col}:{status}"
-                if entry_key in seen_entries["endif"]:
-                    continue
-                seen_entries["endif"].add(entry_key)
+                entry_key = f"ENDIF:{endif_file}:{start_line}:{start_col}{identifier}:{status}"
 
                 entry = {
                     "kind": "directive",
@@ -3608,6 +3755,9 @@ def save_all_directives(input_file, unordered_macros_path, macros_path, database
                     "end_column": int(end_col),
                     "block_start" : int(start_line),
                     "block_end" : int(end_line),
+                    ELEMENT_KEY1: [VAL1],
+                    ELEMENT_KEY2: [VAL2],
+                    ELEMENT_KEY3: [VAL3],
                     "closes": None,
                     "active": not is_skipped,
                     "skipped": is_skipped
@@ -3624,7 +3774,18 @@ def save_all_directives(input_file, unordered_macros_path, macros_path, database
                         "endif": []
                     }
                 
-                data["files"][endif_file]["endif"].append(entry)
+                if entry_key not in seen_entries["endif"]:
+                    data["files"][endif_file]["endif"].append(entry)
+                    seen_entries["endif"].add(entry_key)
+
+                    if entry_key not in seen_map:
+                        seen_map[entry_key] = entry
+
+                else:
+                    seen_map[entry_key][ELEMENT_KEY1].append(VAL1)
+                    seen_map[entry_key][ELEMENT_KEY2].append(VAL2)
+                    seen_map[entry_key][ELEMENT_KEY3].append(VAL3)
+
                 pending_endif = entry
         
         # Parse "=> Closes [IF/IFDEF/IFNDEF]"
@@ -3638,15 +3799,10 @@ def save_all_directives(input_file, unordered_macros_path, macros_path, database
                 if_type, if_file, start_line, start_col, end_line, end_col, if_info = match.groups()
                 if_file = get_abs_path(if_file)
 
-                # if_type, if_file, start_line, start_col, end_line, end_col, if_info = match.groups()
-                # if_file = get_abs_path(if_file)
-                
                 is_skipped = "(skipped)" in if_type
                 if_type = re.sub(r'_(TRUE|FALSE|FUNC_TRUE|FUNC_FALSE|NOT_EVALUATED)', '', if_type)
                 if_type = if_type.replace(" (skipped)", "")
-
-                # if_type = if_type.replace(" (skipped)", "")
-                
+    
                 if if_info:
                     if_info = ' '.join(if_info.split())
 
@@ -3662,7 +3818,6 @@ def save_all_directives(input_file, unordered_macros_path, macros_path, database
                 endif_file, e_start_line, e_start_col, e_end_line, e_end_col, is_endif_skipped = get_endif_info(processed_lines, idx, line)
 
                 # Set closes information
-                
                 if lookup_key not in endif_mapping:
                     endif_mapping[lookup_key] = {}
 
@@ -3679,58 +3834,24 @@ def save_all_directives(input_file, unordered_macros_path, macros_path, database
                     "start_column": int(e_start_col),
                     "end_line": int(e_end_line),
                     "end_column": int(e_end_col),
-                    #"info": None, #if_info if if_info else "",
+                    ELEMENT_KEY1: [VAL1],
+                    ELEMENT_KEY2: [VAL2],
+                    ELEMENT_KEY3: [VAL3],
                     "skipped": is_endif_skipped
-                }
-
-                # endif_mapping[lookup_key]["endif_info"] = {
-                #     "type": if_type,
-                #     "file_path": endif_file,
-                #     "start_line": int(e_start_line),
-                #     "start_column": int(e_start_col),
-                #     "end_line": int(e_end_line),
-                #     "end_column": int(e_end_col),
-                #     "info": None, #if_info if if_info else "",
-                #     "skipped": is_endif_skipped
-                # }
-                
-                # endif_mapping[lookup_key]["endif_info"] = {
-                #     "file_path": pending_endif["file_path"],
-                #     "start_line": pending_endif["start_line"],
-                #     "start_column": pending_endif["start_column"],
-                #     "end_line": pending_endif["end_line"],
-                #     "end_column": pending_endif["end_column"]
-                # }
-                
-                # # Set closes information
-                # pending_endif["closes"] = {
-                #     "type": if_type,
-                #     "file_path": if_file,
-                #     "start_line": int(start_line),
-                #     "start_column": int(start_col),
-                #     "end_line": int(end_line),
-                #     "end_column": int(end_col),
-                #     "info": if_info if if_info else "",
-                #     "skipped": is_skipped
-                # }
-                
+                }                
                 pending_endif = None
 
     # deallocate processed_lines
     del processed_lines
     gc.collect()
 
-    ################
+    del seen_map, seen_entries
+    gc.collect()
+
     # Insert endif information all at once at the end
-    ################
-    
     write_json(f"{database_dir}/endif_mapping.json", endif_mapping)
 
-    ################
-    # Insert endif information all at once at the end
-    ################
-    
-    # added
+    # Insert endif information all at once at the end##
     # ★ Build index for fast lookup of uses
     use_index = {}
     for macro_key, macro_data in data["macros"].items():
@@ -3739,16 +3860,7 @@ def save_all_directives(input_file, unordered_macros_path, macros_path, database
             if idx_key not in use_index:
                 use_index[idx_key] = []
             use_index[idx_key].append(use)
-    # ended
 
-    # ★ Also build index for fast lookup of files
-    # file_index = {}
-    # for file_path, file_data in data["files"].items():
-    #     for directive_type in ["ifdef", "ifndef", "if", "elif", "else"]:
-    #         for entry in file_data.get(directive_type, []):
-    #             idx_key = (directive_type, file_path, entry["start_line"], entry["start_column"])
-    #             file_index[idx_key] = entry
-    
     # Changed: keep all entries with the same key as a list
     file_index_all = {}
     for file_path, file_data in data["files"].items():
@@ -3770,34 +3882,13 @@ def save_all_directives(input_file, unordered_macros_path, macros_path, database
             "end_column": endif_data["end_column"]
         }
         
-        # Extract type, file_path, start_line, start_col from lookup_key
-        # Format: "IF:/path/to/file.c:54:2"
+        # Extract type, file_path, start_line, start_col from lookup_key # Format: "IF:/path/to/file.c:54:2"
         parts = lookup_key.split(":")
         directive_type = parts[0]  # IF, IFDEF, IFNDEF, etc.
         def_file_path = endif_data["def_file_path"]
         def_start_line = endif_data["def_start_line"]
         def_start_col = endif_data["def_start_column"]
         
-
-        # Find the corresponding entry in data["files"] and add endif
-        """
-        if def_file_path in data["files"]:
-            # Search the list corresponding to directive_type
-            directive_list_name = directive_type.lower()  # "IF" -> "if"
-            if directive_list_name in data["files"][def_file_path]:
-                for entry in data["files"][def_file_path][directive_list_name]:
-                    if (entry["start_line"] == def_start_line and 
-                        entry["start_column"] == def_start_col):
-                        entry["endif"] = endif_info
-                        updated_count += 1
-                        
-        """
-        # ★ files: O(1) lookup
-        # file_idx_key = (directive_type.lower(), def_file_path, def_start_line, def_start_col)
-        # entry = file_index.get(file_idx_key)
-        # if entry:
-        #     entry["endif"] = endif_info
-        #     updated_count += 1
 
         # Changed: associate with all entries at the same position
         file_idx_key = (directive_type.lower(), def_file_path, def_start_line, def_start_col)
@@ -3806,21 +3897,14 @@ def save_all_directives(input_file, unordered_macros_path, macros_path, database
             entry["endif"] = endif_info
             updated_count += 1
 
-        """
-        # Also add endif to uses in data["macros"]
-        for macro_key, macro_data in data["macros"].items():
-            for use in macro_data.get("uses", []):
-                if (use["type"] == directive_type and 
-                    use["file_path"] == def_file_path and
-                    use["start_line"] == def_start_line and
-                    use["start_column"] == def_start_col):
-                    use["endif"] = endif_info
-        """
         idx_key = (directive_type, def_file_path, def_start_line, def_start_col)
         for use in use_index.get(idx_key, []):
             use["endif"] = endif_info
 
     print(f"✅ Updated {updated_count} entries with endif information")
+
+    del use_index, file_index_all, endif_mapping
+    gc.collect()
 
     for macro_key, file_data in data["macros"].items():        
         # Merge ifdef, ifndef, if, elif
@@ -3849,29 +3933,18 @@ def save_all_directives(input_file, unordered_macros_path, macros_path, database
 
                 item['block_end'] = end_line
 
-    """
-    for macro_key, file_data in data["macros"].items():        
-        # Merge ifdef, ifndef, if, elif
-        for directive_type in ['ifdef', 'ifndef', 'if', 'elif']:
-            for item in file_data.get(directive_type, []):
-                start_line = item.get('start_line')
-
-                if 'endif' not in item:
-                    continue
-                endif_info = item.get('endif', {})
-                end_line = endif_info.get('start_line') # This is the key point
-
-                item['block_end'] = end_line
-    """
     with open(unordered_macros_path, 'w', encoding='utf-8') as f:
-        json.dump(data["files"], f, indent=4, ensure_ascii=False)
+        json.dump(data["files"], f, separators=(',', ':'), ensure_ascii=False) #json.dump(data["files"], f, indent=4, ensure_ascii=False)
     
     print(f"Saved macro information to: {unordered_macros_path}")
 
     total_files = len(data["files"])
 
+    del data["files"]
+    gc.collect()
+
     with open(macros_path, 'w', encoding='utf-8') as f:
-        json.dump(data["macros"], f, indent=4, ensure_ascii=False)
+        json.dump(data["macros"], f, separators=(',', ':'), ensure_ascii=False) #json.dump(data["macros"], f, indent=4, ensure_ascii=False)
     
     print(f"Saved macro information to: {macros_path}")
 
@@ -3879,6 +3952,7 @@ def save_all_directives(input_file, unordered_macros_path, macros_path, database
     print(f"  Total files: {total_files}")
     
     return data
+
 
 
 def divide_macros(unordered_taken_directive_path, taken_directive_path, meta_dir, target_dir):
@@ -4137,10 +4211,8 @@ def parse_header(header):
 def generate_header_paths_rust_code(headers):
     """
     Generate Rust code for header paths vector from Python list
-    
     Args:
         headers: Python list of header file paths
-        
     Returns:
         String containing Rust code for the vec! initialization
     """
@@ -4191,9 +4263,6 @@ def get_entry_points(target_dir, is_program_path):
         #if file_path.startswith(target_dir_abs):
             entry_points.append(file_path)
     
-    # print(compile_commands_path)
-    # print(entry_points)
-
     entry_points = list(set(entry_points))
     return entry_points
 
@@ -4454,7 +4523,6 @@ def insert_custom_header_include(lines, first_use_line, source_file_path, header
     return lines, 1
 
 
-
 def check_is_in_target_dir(file_path, target_dir, program_files):
 
     if '<command line>' in str(file_path):
@@ -4520,6 +4588,50 @@ def insert_include_before_line(lines, target_line, source_file_path, header_file
 
 
 
+def has_top_level_or(s):
+    """True if `s` contains '||' at paren depth 0."""
+    depth = 0
+    i = 0
+    while i < len(s) - 1:
+        c = s[i]
+        if c == '(':
+            depth += 1
+        elif c == ')':
+            depth -= 1
+        elif depth == 0 and s[i:i+2] == '||':
+            return True
+        i += 1
+    return False
+
+
+def condition_negates(condition, name):
+    """True if `condition` contains !defined(name) / !defined name (paren optional)."""
+    pat = re.compile(
+        r'!\s*defined\s*\(?\s*' + re.escape(name) + r'\b'
+    )
+    return bool(pat.search(condition))
+
+
+def extract_guarded_names(if_info):
+    """
+    Use `macros` (candidate names in the condition) + `condition` (structure)
+    to return the set of names M guarded by !defined(M) as a top-level conjunct.
+    """
+    condition = if_info.get('condition', '') or ''
+    if not condition:
+        return set()
+    
+    # if has_top_level_or(condition): # TODO: needs to be refined
+    #     return set()
+    names = set()
+    for m in if_info.get('macros', []):
+        name = m.get('name')
+        if name and condition_negates(condition, name):
+            names.add(name)
+    return names
+
+
+
 def detect_include_guards(all_directive_path, target_dir, meta_dir, guards_path, is_program_path):
     """Detect include guards and save to JSON"""
     print("Detecting include guards...")
@@ -4543,6 +4655,22 @@ def detect_include_guards(all_directive_path, target_dir, meta_dir, guards_path,
         ifndef_list = file_data.get('ifndef', [])
         define_list = file_data.get('defined', [])
         
+        # Synthesize ifndef-like entries from `#if/#elif` conditions that contain
+        # !defined(M) as a top-level conjunct, so `#if !defined(FOO_H)` include
+        # guards are detected the same way as `#ifndef FOO_H`.
+        synthetic_ifndef = []
+        for key in ('if', 'elif'):
+            for if_info in file_data.get(key, []):
+                for guarded_name in extract_guarded_names(if_info):
+                    synthetic_ifndef.append({
+                        'name': guarded_name,
+                        'start_line': if_info.get('start_line'),
+                        'block_start': if_info.get('block_start'),
+                        'block_end': if_info.get('block_end'),
+                        'endif': if_info.get('endif', {}),
+                    })
+        ifndef_list = list(ifndef_list) + synthetic_ifndef
+
         if not ifndef_list or not define_list:
             continue
         
@@ -4658,6 +4786,23 @@ def detect_guarded_macros(all_directive_path, target_dir, guarded_macros_path, i
                 'block_end': block_end,
                 'ifndef_line': ifndef_info.get('start_line'),
             })
+        
+
+        # Treat `#if/#elif` with !defined(M) as a top-level conjunct as a guard
+        # block for M, using its `macros` list as the candidate names.
+        for key in ('if', 'elif'):
+            for if_info in file_data.get(key, []):
+                block_start = if_info.get('block_start')
+                block_end = if_info.get('block_end')
+                if block_start is None or block_end is None:
+                    continue
+                for guarded_name in extract_guarded_names(if_info):
+                    ifndef_blocks.setdefault((file_path, guarded_name), []).append({
+                        'block_start': block_start,
+                        'block_end': block_end,
+                        'ifndef_line': if_info.get('start_line'),
+                    })
+
     
     # 2. Scan #define from all files and determine whether each is guarded
     guarded_macros = []
@@ -4739,10 +4884,9 @@ def insert_guarded_flag(guarded_macros_path, gen_macro_usage_meta_path):
     guard_keys = set()
     # Set of guarded define definition locations (for is_guarded)
     guarded_define_keys = set()
-    # added
     guard_to_guarded = {}
     guarded_to_guard = {}
-    # ended
+
     for item in guards['guards']:
         file_path = item['file_path']
         ifndef_line = item['ifndef_line']
@@ -4750,12 +4894,11 @@ def insert_guarded_flag(guarded_macros_path, gen_macro_usage_meta_path):
 
         guard_keys.add(f"{file_path}:{ifndef_line}")
         guarded_define_keys.add(f"{file_path}:{define_line}")
-        # added
         guard_key = f"{file_path}:{ifndef_line}"
         define_key = f"{file_path}:{define_line}"
         guard_to_guarded[guard_key] = define_key
         guarded_to_guard[define_key] = guard_key
-        # ended
+
 
     # Insert flags into each macro in usage_macros
     for macro in usage_macros['macros']:
@@ -4763,19 +4906,17 @@ def insert_guarded_flag(guarded_macros_path, gen_macro_usage_meta_path):
         def_key = f"{macro['file_path']}:{macro['start_line']}"
         if def_key in guarded_define_keys:
             macro['is_guarded'] = True
-            # added
             macro['guarded_by'] = guarded_to_guard[def_key]
-            # ended
 
         # is_guard: this macro is used as a condition in #ifndef
         appearances = macro['appearances']
-        for app in appearances:
+
+        for app_item in appearances:
+            app = app_item['location']
             app_without_column = app.rsplit(":", 1)[0]
             if app_without_column in guard_keys:
                 macro['is_guard'] = True
-                # added
                 macro['guarded'] = guard_to_guarded[app_without_column]
-                # ended
                 break
 
     # write_json(gen_macro_usage_meta_path, usage_macros)
@@ -5430,7 +5571,8 @@ def convert_macro_usage(gen_meta_path):
                 "is_guard": is_guard,
                 "is_guarded": is_guarded,
                 "guarded" : guarded,
-                "appearances": []
+                "appearances": [],
+                #"VAL1s": entry.get("VAL1s", []),
             }
 
         for item in uses:
@@ -5446,12 +5588,10 @@ def convert_macro_usage(gen_meta_path):
 
             if 'appearances' not in taken_macros[macro_key]:
                 taken_macros[macro_key]['appearances'] = []
-
-            # if 'start_line' not in item:
-            #     print(item)
-            
+  
             paste_expression = None
-            parts = item.rsplit(":", 3) #2)
+            location = item['location']
+            parts = location.rsplit(":", 3)    # item.rsplit(":", 3) #2)
             if len(parts) >= 3:
                 use_file_path = parts[0]
                 use_line = int(parts[1])
@@ -5460,10 +5600,13 @@ def convert_macro_usage(gen_meta_path):
                 if len(parts) >= 4:
                     paste_expression = parts[3]
 
-            # use_file_path, use_line, use_colum = parse_def_loc(item)
             use_item = {
-                "file_path" : use_file_path, #entry['file_path'],  # Using entry here seems to be a key detail
-                "start_line" : use_line, #item['start_line'],
+                "file_path" : use_file_path, 
+                "start_line" : use_line, 
+                ELEMENT_KEY1 : item.get(ELEMENT_KEY1, []),
+                ELEMENT_KEY2: item.get(ELEMENT_KEY2, []),
+                ELEMENT_KEY3: item.get(ELEMENT_KEY3, []), # momo
+
             }
             if paste_expression is not None:
                 use_item['paste_expression'] = paste_expression
@@ -5656,7 +5799,7 @@ def get_taken_macros(taken_directive_path, gen_macro_usage_meta_path, taken_macr
             if not is_duplicate_use(new_use, existing_uses):
                 taken_macros[macro_key]["appearances"].append(new_use)
 
-
+    
     for macro_key, macro_item in macro_usage_meta_data.items():
         new_uses = macro_item['appearances']
 
@@ -5685,6 +5828,9 @@ def get_taken_macros(taken_directive_path, gen_macro_usage_meta_path, taken_macr
                     "start_column": notation, #app_col,
                     "end_line": notation, #macro_item['end_line'],
                     "end_column": None,
+                    ELEMENT_KEY1: [],
+                    ELEMENT_KEY2: [],
+                    ELEMENT_KEY3: [],
                     "active": True,
                     "skipped": False,
                     "body": None
@@ -5705,21 +5851,35 @@ def get_taken_macros(taken_directive_path, gen_macro_usage_meta_path, taken_macr
         for new_use in new_uses:
             if not is_duplicate_use(new_use, existing_uses):
                 taken_macros[macro_key]["appearances"].append(new_use)
+        
+        # external/unknown macros have no definition site, so their
+        # definition carries no VAL1 of its own.
+        definition_entry = taken_macros[macro_key]["definition"]
+        if definition_entry.get("file_path") in ("external", "unknown"):
+            seen_VAL1 = set()
 
-    """
-    # Integrate macro_meta_data in the same manner
-    for macro_key, new_uses in macro_meta_data.items():
-        existing_uses = taken_macros[macro_key]["uses"]
-        for new_use in new_uses:
-            if not is_duplicate_use(new_use, existing_uses):
-                existing_uses.append(new_use)
-    """
-
+            for key_name in [ELEMENT_KEY1, ELEMENT_KEY2]:
+                for existing_VAL1 in definition_entry.get(key_name, []):
+                    seen_VAL1.add(existing_VAL1)
+                for use_item in taken_macros[macro_key]["appearances"]:
+                    use_VAL1_list = use_item.get(key_name, [])
+                    for one_VAL1 in use_VAL1_list:
+                        if one_VAL1 not in seen_VAL1:
+                            definition_entry[key_name].append(one_VAL1)
+                            seen_VAL1.add(one_VAL1)
+                
     # Record whether each usage location is directive-based
     for macro_key, item in taken_macros.items():
         for use_item in item['appearances']:
             if is_directive(use_item, taken_macros[macro_key]):
                 use_item['is_directive'] = True
+    
+    # check
+    for macro_key, item in taken_macros.items():
+        for use_item in item['appearances']:
+            for key_name in [ELEMENT_KEY1, ELEMENT_KEY2]:
+                if key_name not in use_item:
+                    raise ValueError(f"Must have {key_name}")
 
     write_json(taken_macros_path, taken_macros)
     return taken_macros
@@ -5735,8 +5895,7 @@ def summarize_components(file_path, target_dir, meta_dir):
     meta_data, meta_path = obtain_metadata(file_path, meta_dir, False, None, "def")
     if meta_data is None:
         return
-    #print(meta_path)
-    
+
     # Initialize the components field for each item
     for key, item in meta_data.items():
         item['components'] = {}
@@ -5823,10 +5982,6 @@ def summarize_components(file_path, target_dir, meta_dir):
     
     # Write the updated metadata
     write_json(meta_path, top_level_items)
-    
-    # print(f"Total items: {len(meta_data)}")
-    # print(f"Nested items: {len(nested_item_keys)}")
-    # print(f"Top-level items: {len(top_level_items)}")
     
     return len(nested_item_keys)
 
@@ -6040,10 +6195,9 @@ def combine_with_outermost_conditioned_blocks(all_directive_path, outermost_path
         if meta_data is None:
             meta_data = {}
 
-        meta_data.update(
-            (f"{item['type']}:{item['file_path']}:{item['block_start']}", item)
-            for item in file_conds
-        )
+        for item in file_conds:
+            new_key = f"{item['type']}:{item['file_path']}:{item['block_start']}"
+            meta_data[new_key] = item
 
         write_json(meta_path, meta_data)
 
@@ -6296,7 +6450,7 @@ def define_blocks(round_id, all_directive_path, guards_path, target_dir, meta_di
 
 
 def insert_macro_deps(macro_dep_path, target_dir, meta_dir):
-    print("insert_macro_deps...")
+    print("insert macro_deps...")
     macro_symbols = read_json(macro_dep_path)
 
     for file_path, symbols in macro_symbols.items():
@@ -6398,10 +6552,15 @@ def merge_meta_macros_with_app(target_dir, gen_macro_meta_path, macros_usage_dat
                 continue
             paste_list.append(used_item)
 
-    macros_by_def_key = {
-        f"{m['name']}:{m['file_path']}:{m['start_line']}": m
-        for m in macros_usage_data['macros']
-    }
+    macros_by_def_key = {}
+    for m in macros_usage_data['macros']:
+        key = f"{m['name']}:{m['file_path']}:{m['start_line']}"
+        macros_by_def_key[key] = m
+
+    # macros_by_def_key = {
+    #     f"{m['name']}:{m['file_path']}:{m['start_line']}": m
+    #     for m in macros_usage_data['macros']
+    # }
 
     for paste in paste_list:
         paste_expression = paste['paste_expression']
@@ -6413,14 +6572,27 @@ def merge_meta_macros_with_app(target_dir, gen_macro_meta_path, macros_usage_dat
             continue
         macro = macros_by_def_key[def_key]  # KeyError: '__acos::0' # needs to be checked!!
 
-        if usage_location in macro['appearances']:
-            macro['appearances'].remove(usage_location)
-            app = f'{usage_location}:{paste_expression}'
-            macro['appearances'].append(app)
+        VAL1 = paste.get(ELEMENT_KEY1) or []
+        VAL2 = paste.get(ELEMENT_KEY2) or []
+        VAL3 = paste.get(ELEMENT_KEY3) or []
+
+        existing = None
+        for a in macro['appearances']:
+            if a['location'] == usage_location:
+                existing = a
+                break
+
+        if existing is not None:
+            existing['paste_expression'] = paste_expression
+
         else:
-            app = f'{usage_location}:{paste_expression}'
-            macro['appearances'].append(app)
-                    
+            macro['appearances'].append({
+                'location': usage_location,
+                ELEMENT_KEY1: VAL1,
+                ELEMENT_KEY2: VAL2,
+                ELEMENT_KEY3: VAL3,
+                'paste_expression': paste_expression,
+            })   
 
     #### Usages
     uses = {}
@@ -6463,21 +6635,23 @@ def merge_meta_macros_with_app(target_dir, gen_macro_meta_path, macros_usage_dat
             continue
 
         uses_list = uses[macro_key]
+
+        existing_locations = set()
+        for a in macro['appearances']:
+            existing_locations.add(a['location'])
+
         for use_item in uses_list:
-            app = use_item['usage_location']
-
-            paste_expression = None
-            """
-            if 'paste_expression' in use_item:
-                paste_expression = use_item['paste_expression']
-            """
-
-            if app not in macro['appearances']:
-                """
-                if paste_expression is not None:
-                    f'{app}:{paste_expression}'
-                """
-                macro['appearances'].append(app)
+            loc = use_item['usage_location']
+            if loc in existing_locations:
+                continue
+            macro['appearances'].append({
+                'location': loc,
+                ELEMENT_KEY1: use_item.get(ELEMENT_KEY1) or [],
+                ELEMENT_KEY2: use_item.get(ELEMENT_KEY2) or [],
+                ELEMENT_KEY3: use_item.get(ELEMENT_KEY3) or [],
+                'paste_expression': use_item.get('paste_expression'),
+            })
+            existing_locations.add(loc)
     
     return macros_usage_data
 
@@ -6529,11 +6703,24 @@ def reform_uses_data(target_dir, macros_usage_data):
             continue
 
         uses_list = uses[macro_key]
+
+        existing_locations = set()
+        for a in macro['appearances']:
+            existing_locations.add(a['location'])
+
         for use_item in uses_list:
-            app = use_item['usage_location']
-            if app not in macro['appearances']:
-                macro['appearances'].append(app)
-    
+            loc = use_item['usage_location']
+            if loc in existing_locations:
+                continue
+            macro['appearances'].append({
+                'location': loc,
+                ELEMENT_KEY1: use_item.get(ELEMENT_KEY1) or [],
+                ELEMENT_KEY2: use_item.get(ELEMENT_KEY2) or [],
+                ELEMENT_KEY3: use_item.get(ELEMENT_KEY3) or [],
+                'paste_expression': use_item.get('paste_expression'),
+            })
+            existing_locations.add(loc)
+
     return macros_usage_data
 
 
@@ -6543,23 +6730,59 @@ def merge_directive_macros_with_app(target_dir, taken_directive_path, macros_usa
     directives = read_json(taken_directive_path)
     seen = set()
 
-    # Convert existing macros' appearances to sets for fast lookup
+    def _pad(lst, n):
+        lst = lst or []
+        return lst + [""] * (n - len(lst))
+
     for macro in macros_usage_data['macros']:
         macro_key = f"{macro['name']}:{macro['definition']}"
         if macro_key not in directives:
             continue
 
         seen.add(macro_key)
+        app_map = defaultdict(set)
 
-        # Convert list → set (O(n) → O(1) lookup)
-        app_set = set(macro['appearances'])
-        for use_item in directives[macro_key]['appearances']:
-            app = f"{use_item['file_path']}:{use_item['start_line']}:{use_item['start_column']}"
-            app_set.add(app)  # Duplicates are automatically excluded
-        macro['appearances'] = list(app_set)
+        # Existing macro appearances
+        for a in macro['appearances']:
+            loc = a['location']
+
+            VAL1_list = a.get(ELEMENT_KEY1) or []
+            VAL2_list = _pad(a.get(ELEMENT_KEY2), len(VAL1_list))
+            VAL3_list = _pad(a.get(ELEMENT_KEY3), len(VAL1_list))
+
+            for VAL1, VAL2, VAL3 in zip(VAL1_list, VAL2_list, VAL3_list):
+                app_map[loc].add((VAL1, VAL2, VAL3))
+
+        # Directive appearances
+        dir_item = directives.pop(macro_key)
+        for use_item in dir_item['appearances']:
+        # for use_item in directives[macro_key]['appearances']:
+            loc = f"{use_item['file_path']}:{use_item['start_line']}:{use_item['start_column']}"
+
+            VAL1_list = use_item.get(ELEMENT_KEY1) or []
+            VAL2_list = _pad(use_item.get(ELEMENT_KEY2), len(VAL1_list))
+            VAL3_list = _pad(use_item.get(ELEMENT_KEY3), len(VAL1_list))
+
+            for VAL1, VAL2, VAL3 in zip(VAL1_list, VAL2_list, VAL3_list):
+                app_map[loc].add((VAL1, VAL2, VAL3))
+
+        macro['appearances'] = []
+        for loc, pairs in app_map.items():
+            pairs = sorted(pairs)
+
+            macro['appearances'].append({
+                "location": loc,
+                ELEMENT_KEY1: [VAL1 for VAL1, _, _ in pairs],
+                ELEMENT_KEY2: [VAL2 for _, VAL2, _ in pairs],
+                ELEMENT_KEY3: [VAL3 for _, _, VAL3 in pairs],
+            })
 
     # Bulk-add unmatched entries
-    for macro_key, item in directives.items():
+    # for macro_key, item in directives.items():
+    #     if macro_key in seen:
+    #         continue
+    for macro_key in list(directives.keys()):
+        item = directives.pop(macro_key)
         if macro_key in seen:
             continue
 
@@ -6568,6 +6791,29 @@ def merge_directive_macros_with_app(target_dir, taken_directive_path, macros_usa
         start_column = item['definition']['start_column']
 
         definition = file_path if start_line is None else f"{file_path}:{start_line}:{start_column}"
+
+        app_map = defaultdict(set)
+
+        for a in item['appearances']:
+            loc = f"{a['file_path']}:{a['start_line']}:{a['start_column']}"
+
+            VAL1_list = a.get(ELEMENT_KEY1) or []
+            VAL2_list = _pad(a.get(ELEMENT_KEY2), len(VAL1_list))
+            VAL3_list = _pad(a.get(ELEMENT_KEY3), len(VAL1_list))
+
+            for VAL1, VAL2, VAL3 in zip(VAL1_list, VAL2_list, VAL3_list):
+                app_map[loc].add((VAL1, VAL2, VAL3))
+
+        appearances = []
+        for loc, pairs in app_map.items():
+            pairs = sorted(pairs)
+
+            appearances.append({
+                "location": loc,
+                ELEMENT_KEY1: [VAL1 for VAL1, _, _ in pairs],
+                ELEMENT_KEY2: [VAL2 for _, VAL2, _ in pairs],
+                ELEMENT_KEY3: [VAL3 for _, _, VAL3 in pairs],
+            })
 
         macros_usage_data['macros'].append({
             "kind": "macro",
@@ -6580,13 +6826,87 @@ def merge_directive_macros_with_app(target_dir, taken_directive_path, macros_usa
             "is_flag": None,
             "expanded_value": None,
             "parameters": [],
-            "appearances": [
-                f"{a['file_path']}:{a['start_line']}:{a['start_column']}"
-                for a in item['appearances']
-            ]
+            "appearances": appearances
         })
 
     return macros_usage_data
+
+
+
+def merge_directive_macros_with_app0(target_dir, taken_directive_path, macros_usage_data):
+    print("Merging directive_macros with usage...")
+
+    directives = read_json(taken_directive_path)
+    seen = set()
+
+    # Convert existing macros' appearances to sets for fast lookup
+    for macro in macros_usage_data['macros']:
+        macro_key = f"{macro['name']}:{macro['definition']}"
+        if macro_key not in directives:
+            continue
+        seen.add(macro_key)
+
+        app_set = set()
+        for a in macro['appearances']:
+            if ELEMENT_KEY3 not in a:
+                print(macro_key)
+            app_set.add((a['location']))
+
+        for use_item in directives[macro_key]['appearances']:
+            if ELEMENT_KEY3 not in use_item:
+                print(macro_key)
+            loc = f"{use_item['file_path']}:{use_item['start_line']}:{use_item['start_column']}"
+            VAL1 = use_item.get(ELEMENT_KEY1, [])
+            VAL2 = use_item.get(ELEMENT_KEY2, [])
+            VAL3 = use_item.get(ELEMENT_KEY3, [])
+
+        macro['appearances'] = []
+        for (loc) in app_set: 
+            appearance = {
+                "location": loc,
+                ELEMENT_KEY1: VAL1,
+                ELEMENT_KEY2: VAL2,
+                ELEMENT_KEY3: VAL3
+            }
+            macro['appearances'].append(appearance)
+            
+
+    # Bulk-add unmatched entries
+    for macro_key, item in directives.items():
+        if macro_key in seen:
+            continue
+
+        file_path = item['definition']['file_path'] or "undefined"
+        start_line = item['definition']['start_line']
+        start_column = item['definition']['start_column']
+
+        definition = file_path if start_line is None else f"{file_path}:{start_line}:{start_column}"
+
+        appearances = []
+        for a in item['appearances']:
+            loc = f"{a['file_path']}:{a['start_line']}:{a['start_column']}"
+            appearances.append({
+                "location": loc,
+                ELEMENT_KEY1: VAL1,
+                ELEMENT_KEY3: a[ELEMENT_KEY3]
+            })
+
+        macros_usage_data['macros'].append({
+            "kind": "macro",
+            "name": item['name'],
+            "definition": definition,
+            "start_line": start_line,
+            "end_line": start_line,
+            "file_path": file_path,
+            "is_const": None,
+            "is_flag": None,
+            "expanded_value": None,
+            "parameters": [],
+            "appearances": appearances
+        })
+
+    return macros_usage_data
+
 
 
 def get_compile_json(target_dir):
@@ -6640,10 +6960,6 @@ def setup_compile_json(given_compile_dir, old_directory, new_directory):
 
     new_compile_dir = given_compile_dir.replace(old_directory, new_directory)
     new_compile_json_path = given_compile_json_path.replace(old_directory, new_directory)
-
-    # print(new_compile_dir)
-    # print(given_compile_dir)
-    # print(given_compile_json_path)
 
     copy_file(given_compile_json_path, new_compile_dir)
 
@@ -6897,257 +7213,6 @@ def make_all_files_writable(target_dir):
     return count
 
 
-
-_pending_rewrites_lock = threading.Lock()
-
-
-def add_pending_rewrite(file_path, line, old, new, database_dir):
-    """
-    Append a rewrite entry to pending_rewrites.json.
-    
-    Args:
-        file_path: Target file (absolute path).
-        line: Line number (1-based).
-        old: Substring to replace on that line.
-        new: Replacement string.
-        database_dir: Macrust database directory (where pending_rewrites.json lives).
-    """
-    path = f"{database_dir}/pending_rewrites.json"
-    abs_file = os.path.abspath(file_path)
-
-    with _pending_rewrites_lock:
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-        except (FileNotFoundError, json.JSONDecodeError):
-            data = {}
-
-        if abs_file not in data:
-            data[abs_file] = []
-
-        data[abs_file].append({
-            "line": int(line),
-            "old": old,
-            "new": new,
-        })
-
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2)
-
-
-def reset_pending_rewrites(database_dir):
-    """Clear pending_rewrites.json at the start of a Macrust run."""
-    path = f"{database_dir}/pending_rewrites.json"
-    if Path(path).exists():
-        Path(path).unlink()
-
-
-
-def record_duplication(src_file, dst_file, database_dir):
-    """Record a file duplication for later re-creation if needed."""
-    path = f"{database_dir}/duplications.json"
-    abs_src = os.path.abspath(src_file)
-    abs_dst = os.path.abspath(dst_file)
-
-    with _pending_rewrites_lock:
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-        except (FileNotFoundError, json.JSONDecodeError):
-            data = {}
-        data[abs_dst] = abs_src
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2)
-
-
-def reset_duplications(database_dir):
-    path = f"{database_dir}/duplications.json"
-    if Path(path).exists():
-        Path(path).unlink()
-
-
-
-def build_rewrite_plan(database_dir, target_subdir):
-
-    tu_trace_path = f"{database_dir}/tu_traces.jsonl"
-    pending_path = f"{database_dir}/pending_rewrites.json"
-    if not Path(pending_path).exists():
-        print("No pending rewrites; skipping plan generation")
-        return
-
-    with open(pending_path, 'r') as f:
-        pending = json.load(f)
-
-    # Build TU -> set of files it reads
-    tu_to_files = {}
-    with open(tu_trace_path, 'r') as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            d = json.loads(line)
-            tu = d['tu']
-            files = {tu}
-            for edge in d['edges']:
-                files.add(edge['from'])
-                files.add(edge['to'])
-            tu_to_files[tu] = files
-
-    commands = []
-    for tu, files in tu_to_files.items():
-        rewrites = []
-        for f in files:
-            if f in pending:
-                for r in pending[f]:
-                    rewrites.append({
-                        "kind": "line_replace",
-                        "file": f,
-                        "line": r['line'],
-                        "old": r['old'],
-                        "new": r['new'],
-                    })
-        if rewrites:
-            commands.append({
-                "match": {"contains": ["-c", tu]},
-                "rewrites": rewrites,
-            })
-
-    plan_dir = f"/root/macrust-code/plan/{target_subdir}"
-    Path(plan_dir).mkdir(parents=True, exist_ok=True)
-    plan_path = f"{plan_dir}/rewrite_plan.json"
-    with open(plan_path, 'w') as f:
-        json.dump({"commands": commands}, f, indent=2)
-    print(f"Wrote rewrite plan: {plan_path} ({len(commands)} commands)")
-
-    dup_src = f"{database_dir}/duplications.json"
-    if Path(dup_src).exists():
-        shutil.copy2(dup_src, f"{plan_dir}/duplications.json")
-
-
-
-def build_rewrite_plan(database_dir, target):
-    """
-    Convert pending_rewrites.json (file-keyed) to rewrite_plan.json (TU-keyed).
-    Also copy duplications.json into the plan directory.
-    """
-    tu_trace_path = f"{database_dir}/tu_traces.jsonl"
-    pending_path = f"{database_dir}/pending_rewrites.json"
-    if not Path(pending_path).exists():
-        print("No pending rewrites; skipping plan generation")
-        return
-
-    with open(pending_path, 'r') as f:
-        pending = json.load(f)  # {file: [{line, old, new}, ...]}
-
-    # Build TU -> set of files it reads
-    tu_to_files = {}
-    with open(tu_trace_path, 'r') as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            d = json.loads(line)
-            tu = d['tu']
-            files = {tu}
-            for edge in d['edges']:
-                files.add(edge['from'])
-                files.add(edge['to'])
-            tu_to_files[tu] = files
-
-    # Build plan: for each TU, generate a match condition + collect rewrites
-    commands = []
-    for tu, files in tu_to_files.items():
-        rewrites = []
-        for f in files:
-            if f in pending:
-                for r in pending[f]:
-                    rewrites.append({
-                        "kind": "line_replace",
-                        "file": f,
-                        "line": r['line'],
-                        "old": r['old'],
-                        "new": r['new'],
-                    })
-        if rewrites:
-            # Match by basename so both absolute and relative paths work
-            commands.append({
-                "match": {"contains": ["-c", os.path.basename(tu)]},
-                "rewrites": rewrites,
-            })
-
-    # Write to plan dir
-    plan_dir = f"/root/macrust-code/plan/{target}"
-    Path(plan_dir).mkdir(parents=True, exist_ok=True)
-    plan_path = f"{plan_dir}/rewrite_plan.json"
-    with open(plan_path, 'w') as f:
-        json.dump({"commands": commands}, f, indent=2)
-    print(f"Wrote rewrite plan: {plan_path} ({len(commands)} commands)")
-
-    # Copy duplications.json into plan dir
-    dup_src = f"{database_dir}/duplications.json"
-    if Path(dup_src).exists():
-        shutil.copy2(dup_src, f"{plan_dir}/duplications.json")
-        print(f"Copied duplications: {plan_dir}/duplications.json")
-
-
-
-def cleanup_plan(database_dir, target):
-
-    reset_pending_rewrites(database_dir)
-
-    reset_duplications(database_dir)
-
-    delete_file(f"/root/macrust-code/plan/{target}/duplications.json")
-    delete_file(f"/root/macrust-code/plan/{target}/rewrite_plan.json")
-
-
-def protect_modified_files(database_dir):
-    """Protect Macrust-modified files from being overwritten by build."""
-    path = f"{database_dir}/modified_files.json"
-    if not Path(path).exists():
-        return
-    with open(path, 'r') as f:
-        files = json.load(f)
-    
-    count = 0
-    for f in files:
-        if not Path(f).exists():
-            continue
-        # chmod -w
-        try:
-            current = os.stat(f).st_mode
-            os.chmod(f, current & ~(stat.S_IWUSR | stat.S_IWGRP | stat.S_IWOTH))
-        except Exception:
-            pass
-        # chattr +i (against rm)
-        subprocess.run(['chattr', '+i', f], capture_output=True)
-        count += 1
-    print(f"Protected {count} Macrust-modified files")
-
-
-def unprotect_modified_files(database_dir):
-    """Remove protection from Macrust-modified files."""
-    path = f"{database_dir}/modified_files.json"
-    if not Path(path).exists():
-        return
-    with open(path, 'r') as f:
-        files = json.load(f)
-    
-    count = 0
-    for f in files:
-        if not Path(f).exists():
-            continue
-        subprocess.run(['chattr', '-i', f], capture_output=True)
-        try:
-            current = os.stat(f).st_mode
-            os.chmod(f, current | stat.S_IWUSR)
-        except Exception:
-            pass
-        count += 1
-    print(f"Unprotected {count} files")
-
-
-
 def make_guard_name(file_path: Path, root: Path | None) -> str:
     """
     Build a guard like KRML_TYPES_H_ from a path. Using the path relative
@@ -7325,10 +7390,12 @@ def apply_overlay(target_dir, database_dir):
         print(f"Re-applied {count} overlay files to {target_dir}")
 
 
-def detect_top_level_uses(gen_macro_usage_meta_path, database_dir, meta_dir): # , top_level_uses_path
+def detect_top_level_uses(gen_macro_usage_meta_path, database_dir, meta_dir, is_program_path): # , top_level_uses_path
     macro_meta = read_json(gen_macro_usage_meta_path)
     all_apps = defaultdict(list)
     top_level_uses = [] #defaultdict(list)
+
+    program_files = set(read_json(is_program_path))
 
     ## collect appearances
     # Flatten each macro's appearances into per-file entries.
@@ -7336,13 +7403,22 @@ def detect_top_level_uses(gen_macro_usage_meta_path, database_dir, meta_dir): # 
     for macro in macro_meta.get("macros", []):
         macro_name = macro["name"]
         macro_def = macro["definition"]
-        for appearance in macro.get("appearances", []):
+
+        if macro_def == "undefined" or "<built-in>" in macro_def: # added
+            continue
+
+        for app_item in macro.get("appearances", []):
             # Parse "path:line:col" by locating the last two colons
+            appearance = app_item['location']
             last_colon = appearance.rfind(":")
             second_last_colon = appearance.rfind(":", 0, last_colon)
             if second_last_colon == -1:
                 continue
             file_path = appearance[:second_last_colon]
+
+            if file_path not in program_files: # added
+                continue
+
             try:
                 line = int(appearance[second_last_colon + 1:last_colon])
                 col = int(appearance[last_colon + 1:])
@@ -7352,6 +7428,7 @@ def detect_top_level_uses(gen_macro_usage_meta_path, database_dir, meta_dir): # 
             all_apps[file_path].append({
                 "macro_name": macro_name,
                 "macro_definition": macro_def,
+                "file_path": file_path,
                 "start_line": line,
                 "start_column": col,
                 "end_line": line,
@@ -7384,40 +7461,81 @@ def detect_top_level_uses(gen_macro_usage_meta_path, database_dir, meta_dir): # 
 
             if found:
                 continue
+            
+            is_use = True
+            if target_item['macro_definition'] == f"{target_item['file_path']}:{target_item['start_line']}:{target_item['start_column']}":
+                is_use = False
 
-            new_macro_key = f"top_level_use:{file_path}:{target_item['start_line']}"
+            if is_use:
+                new_macro_key = f"top_level_use:{file_path}:{target_item['start_line']}"
+                new_data = {
+                    "kind": "top_level_use",
+                    "name": "",
+                    "definition": "",
+                    "start_line": target_item['start_line'],
+                    "start_column": target_item['start_column'],
+                    "end_line": target_item['end_line'],
+                    "block_start": target_item['start_line'],
+                    "block_end": target_item['end_line'],
+                    "rust_code": {
+                        "file_path": None,
+                        "start_line": None,
+                        "content": None
+                    },
+                    "components" : {},
+                    "uses": [] #uses_list #[]
+                }
 
-            new_data = {
-                "kind": "top_level_use",
-                "name": "",
-                "definition": "",
-                "start_line": target_item['start_line'],
-                "start_column": target_item['start_column'],
-                "end_line": target_item['end_line'],
-                "block_start": target_item['start_line'],
-                "block_end": target_item['end_line'],
-                "rust_code": {
-                    "file_path": None,
-                    "start_line": None,
-                    "content": None
-                },
-                "uses": []
-            }
-            new_data['uses'].append({
-                "kind": "macro",
-                "name": target_item['macro_name'],
-                "definition": target_item['macro_definition'],
-                "usage_location": f"{file_path}:{target_item['start_line']}:{target_item['start_column']}",
-            })
+                #child_key = target_item['macro_definition']
+                new_data['uses'].append({
+                    "kind": "macro",
+                    "name": target_item['macro_name'],
+                    "definition": target_item['macro_definition'],
+                    "usage_location": f"{file_path}:{target_item['start_line']}:{target_item['start_column']}",
+                })
 
-            meta_data[new_macro_key] = new_data
+                meta_data[new_macro_key] = new_data
 
-            top_level_uses.append(new_data)
+                top_level_uses.append(new_data)
+            
+            else: # is_def
+                uses_list = target_item.get('uses', [])
+                new_macro_key = f"{target_item['macro_name']}:{file_path}:{target_item['start_line']}"
+                new_data = {
+                    "kind": "macro",
+                    "name": target_item['macro_name'],
+                    "definition": "",
+                    "start_line": target_item['start_line'],
+                    "start_column": target_item['start_column'],
+                    "end_line": target_item['end_line'],
+                    "block_start": target_item['start_line'],
+                    "block_end": target_item['end_line'],
+                    "rust_code": {
+                        "file_path": None,
+                        "start_line": None,
+                        "content": None
+                    },
+                    "components" : {},
+                    "uses": uses_list #[]
+                }
+
+                child_key = target_item['macro_definition']
+                new_data['components'][child_key] = {
+                    "kind": "macro",
+                    "name": target_item['macro_name'],
+                    "definition": target_item['macro_definition'],
+                    "usage_location": f"{file_path}:{target_item['start_line']}:{target_item['start_column']}",
+                }
+
+                meta_data[new_macro_key] = new_data
 
         write_json(meta_path, meta_data)
     
     write_json(f"{database_dir}/top_level_uses.json", top_level_uses)
 
+
+def cleanup_plan(database_dir, target):
+    print("")
 
 
 def strip_cc1_entries(path: str) -> None:
@@ -7511,17 +7629,12 @@ def parse_all(round_id, target, macro_finder, target_dir, meta_dir, div_meta_dir
         
         try:
             strip_line_directives_in_dir(target_dir)
-            # make_all_files_read_only(target_dir)
-            # protect_modified_files(database_dir)
 
             error_output, std_output = run_script_wo_log(build_path, 10000, True, None, option)
             if error_output is not None:
                 raise ValueError(f"Faild to run {build_path} at round {round_id}")
             
         finally:
-            # make_all_files_writable(target_dir)
-            # unprotect_modified_files(database_dir)
-
             # Restore to the original compile_json_path. The build may have
             # removed its parent directory (e.g. build/), so recreate it.
             Path(compile_json_path).parent.mkdir(parents=True, exist_ok=True)
@@ -7529,13 +7642,8 @@ def parse_all(round_id, target, macro_finder, target_dir, meta_dir, div_meta_dir
             shutil.copy2(stash_path, compile_json_path)
             Path(stash_path).unlink()
 
-            # shutil.copy2(stash_path, compile_json_path)
-            # Path(stash_path).unlink()
-    
 
     else: # round_id != "1":
-        build_rewrite_plan(database_dir, target)
-
         compile_dir, compile_json_path = get_compile_json(target_dir)
 
         # # Stash the compile_commands.json before modifying sources.
@@ -7550,16 +7658,14 @@ def parse_all(round_id, target, macro_finder, target_dir, meta_dir, div_meta_dir
         shutil.copy2(compile_json_path, stash_path)
 
         try:
-            # make_all_files_read_only(target_dir)
-            protect_modified_files(database_dir)
+            # protect_modified_files(database_dir)
 
             error_output, std_output = run_script_wo_log(build_path, 10000, True, None, option)
             if error_output is not None:
                 raise ValueError(f"Faild to run {build_path} at round {round_id}")
  
         finally:
-            # make_all_files_writable(target_dir)
-            unprotect_modified_files(database_dir)
+            # unprotect_modified_files(database_dir)
 
             # Restore to the original compile_json_path. The build may have
             # removed its parent directory (e.g. build/), so recreate it.
@@ -7568,15 +7674,11 @@ def parse_all(round_id, target, macro_finder, target_dir, meta_dir, div_meta_dir
             shutil.copy2(stash_path, compile_json_path)
             Path(stash_path).unlink()
 
-            # shutil.copy2(stash_path, compile_json_path)
-            # Path(stash_path).unlink()
-
 
     check_permission(target_dir)
     compile_dir, compile_json_path = get_compile_json(target_dir)
     
     strip_cc1_entries(compile_json_path)
-    # print(compile_json_path)
 
     if round_id == "all":
         compile_commands = read_json(compile_json_path)
@@ -7587,16 +7689,6 @@ def parse_all(round_id, target, macro_finder, target_dir, meta_dir, div_meta_dir
         if compile_dir is None or len(compile_commands) == 0:
             copy_file(f"{database_dir}/compile_commands.json", given_compie_dir)
 
-            """
-            #compile_dir, compile_json_path = given_compile_dir, given_compile_json_path  #denormalize_compile_json(given_compile_json_path, compile_json_path)
-            copy_file(given_compile_json_path, compile_dir)
-            # print(compile_json_path)
-            compile_commands = read_json(compile_json_path)
-            compile_commands = replace_in_value(compile_commands, "macrust", "allrust")
-            # setup_compile_json(given_compile_dir, given_compile_json_path, f"{MACRO_HOME}", f"{TRANS_HOME}")
-            # compile_dir, compile_json_path = given_compile_dir, given_compile_json_path
-            write_json(compile_json_path, compile_commands)
-            """
             compile_commands = read_json(compile_json_path)
 
             if compile_dir is None or len(compile_commands) == 0:
@@ -7652,10 +7744,10 @@ def parse_all(round_id, target, macro_finder, target_dir, meta_dir, div_meta_dir
 
         fut_macro_meta = pool.submit(generate_macro_metadata, target_dir, meta_dir, database_dir, independent_path, compile_dir, compile_json_path, round_id) #, independent_path)
 
-        all_symbols, gen_meta_path = fut_meta.result()  # , macro_dep_path
+        all_symbols, gen_meta_path = fut_meta.result()
         all_usage_symbols, gen_macro_usage_meta_path, macros_usage_data = fut_macro_usage.result()
 
-        macro_dep_path = update_metadata(all_symbols, meta_dir, database_dir, macro_on)
+        update_metadata(all_symbols, meta_dir, database_dir, macro_on)
         update_macro_usage_metadata(all_usage_symbols, meta_dir, independent_path, flag_path, target_dir)
 
         #if round_id in ["call", "all", "4"]:
@@ -7671,10 +7763,7 @@ def parse_all(round_id, target, macro_finder, target_dir, meta_dir, div_meta_dir
         fut_all = pool.submit(save_all_directives, output_file, all_directive_path, ordered_all_directive_path, database_dir, target_dir, False, False)
         
         # Active directive macros
-        #save_taken_directives(output_file, unordered_taken_directive_path, taken_directive_path)
-        #save_all_directives(output_file, unordered_taken_directive_path, taken_directive_path, database_dir, True, False)
         fut_taken = pool.submit(save_all_directives, output_file, unordered_taken_directive_path, taken_directive_path, database_dir, target_dir, True, False)
-
 
         fut_taken.result()
         fut_all.result()
@@ -7687,12 +7776,22 @@ def parse_all(round_id, target, macro_finder, target_dir, meta_dir, div_meta_dir
     # Merge ifdef usage locations into macros_usage_data
     macros_usage_data = merge_directive_macros_with_app(target_dir, taken_directive_path, macros_usage_data)
 
-    # Merge appearances into metadata uses
-    merge_appearances_with_uses(target_dir, meta_dir, database_dir, macros_usage_data)
+    # Merge entire uses into entire appearances # added
+    macros_usage_data = merge_uses_into_entire_appearances(target_dir, database_dir, macros_usage_data)
 
     write_json(gen_macro_usage_meta_path, macros_usage_data)
 
-    detect_top_level_uses(gen_macro_usage_meta_path, database_dir, meta_dir)
+    # Merge entire appearances into metadata uses
+    merge_appearances_into_uses(target_dir, meta_dir, database_dir, macros_usage_data)
+
+    # Merge entire uses into metadata uses # added
+    merge_uses_into_uses(target_dir, meta_dir, database_dir, macros_usage_data)
+
+    # Merge entire uses into metadata appearances # added
+    merge_uses_into_appearances(target_dir, meta_dir, database_dir, macros_usage_data)
+
+    #########
+    # detect_top_level_uses(gen_macro_usage_meta_path, database_dir, meta_dir)
 
     if round_id == "call":
         return
@@ -7702,7 +7801,7 @@ def parse_all(round_id, target, macro_finder, target_dir, meta_dir, div_meta_dir
     # Detect include guards (this is also dynamic, so it probably needs to be done before dynamic detection)
     detect_include_guards(all_directive_path, target_dir, meta_dir, guards_path, is_program_path) # taken_macros_path # Before: pre-expansion info  # Using taken could be inaccurate for cases where duplicate includes occur across files
 
-    detect_guarded_macros(all_directive_path, target_dir, guarded_macros_path, is_program_path)  # , meta_dir
+    detect_guarded_macros(all_directive_path, target_dir, guarded_macros_path, is_program_path) 
 
     insert_guarded_flag(guarded_macros_path, gen_macro_usage_meta_path)
 
@@ -7725,11 +7824,11 @@ def parse_all(round_id, target, macro_finder, target_dir, meta_dir, div_meta_dir
     outermost_path = f"{database_dir}/outermost.json"
     combine_with_outermost_conditioned_blocks(all_directive_path, outermost_path, guards_path, target_dir, round_id, meta_dir, is_program_path)
 
-    #if div_meta_dir is not None:
+    detect_top_level_uses(gen_macro_usage_meta_path, database_dir, meta_dir, is_program_path)
+
     recreate_directory(div_meta_dir)
 
     # Metadata should be stored separately for non-grouped and parallel ones.
-    # if div_meta_dir is not None:
     parent = os.path.dirname(div_meta_dir)
     copy_directory(meta_dir, parent)
 
@@ -7738,27 +7837,20 @@ def parse_all(round_id, target, macro_finder, target_dir, meta_dir, div_meta_dir
 
 
     if round_id in ["4"]: #["1", "2", "3", "4"]:
-        # detect_flag(unordered_taken_directive_path, guarded_macros_path, flag_path)  #detect_cfg(all_directive_path, guards_path, cfg_path)
-
         # Incorporate cfg if-statements as component elements to facilitate prompt generation
-        #insert_ifdef_statement(cfg_path, target_dir, meta_dir) # flag_path = cfg_path maybe
-        insert_ifdef_statement(flag_path, target_dir, meta_dir) # flag_path = cfg_path maybe
+        insert_ifdef_statement(flag_path, target_dir, meta_dir)
 
     print(f"\n---- Define conditioned blocks ----")
-    p_f(define_conditioned_blocks, target_dir, True, True, round_id, meta_dir) # # , all_macro_path dep_json_path # blocks.py, # analyze_blocks
+    p_f(define_conditioned_blocks, target_dir, True, True, round_id, meta_dir)
 
     # define blocks
-    # define_blocks(round_id, all_directive_path, guarded_macros_path, target_dir, meta_dir, div_meta_dir, database_dir)  # , raw_dir
+    # define_blocks(round_id, all_directive_path, guarded_macros_path, target_dir, meta_dir, div_meta_dir, database_dir)
 
     # Reset modified files record
     modified_files_path = f"{database_dir}/modified_files.json"
     delete_file(modified_files_path)
 
     cleanup_plan(database_dir, target)
-
-
-def replace_macro_func_ref(macro_func_path, target_dir, output_dir):
-    print("replace_macro_func_ref()...")
 
 
 
@@ -7956,8 +8048,8 @@ def insert_target_annotation(target_dir, target_path, marker):
 def detect_const(const_path, target_dir, meta_dir):
     print("detect_const ...")
 
-    # 1. Generate temporary files with test lines inserted right after each TU's use site
-    #    Return value: { tu_path: { test_line_number: (macro_name, def_id) } }
+    # 1. Generate temporary files with test lines inserted right after each VAL1's use site
+    #    Return value: { VAL1: { test_line_number: (macro_name, def_id) } }
     test_line_map = insert_volatile(target_dir, meta_dir)
 
     # 2. Load compile_commands.json
@@ -7970,8 +8062,8 @@ def detect_const(const_path, target_dir, meta_dir):
     if not target_dir_abs.endswith('/'):
         target_dir_abs += '/'
 
-    # 3. Run clang -fsyntax-only for each TU
-    error_lines = {}  # { tu_path: set of error line numbers }
+    # 3. Run clang -fsyntax-only for each VAL1
+    error_lines = {}  # { VAL1: set of error line numbers }
 
     for entry in cc:
         file_path = entry.get('file', '')
@@ -8000,8 +8092,8 @@ def detect_const(const_path, target_dir, meta_dir):
     # 4. Aggregate the results of test lines
     consts = {}  # { (macro_name, def_id): is_const }
 
-    for tu_path, line_map in test_line_map.items():
-        tu_errors = error_lines.get(tu_path, set())
+    for VAL1, line_map in test_line_map.items():
+        tu_errors = error_lines.get(VAL1, set())
         for test_line, (macro_name, def_id) in line_map.items():
             key = f"{macro_name}:{def_id}"
             is_const = test_line not in tu_errors
@@ -8167,7 +8259,7 @@ def merge_ranges(ranges):
 
 
 
-def setup_macro_without_transforming(llm_on, target, macro_finder, target_dir, database_dir, meta_dir, div_meta_dir, build_path, cfg_path, target_path, marker,  
+def setup_macro_baseline(llm_on, target, macro_finder, target_dir, database_dir, meta_dir, div_meta_dir, build_path, cfg_path, target_path, marker,  
                             list_path, dep_json_path, custom_headers_dir, custom_json_path, custom_header_path,
                             llm_choice, llm_instance, token_path, chat_dir, all_macros_path, taken_macros_path, 
                             all_directive_path, taken_directive_path, is_program_path, global_path,
@@ -8185,13 +8277,13 @@ def setup_macro_without_transforming(llm_on, target, macro_finder, target_dir, d
     dynamic_path = f"{database_dir}/dynamic_macros.json"
     #all_dynamic_path = f"{database_dir}/dynamic_macros_all.json"
     program_dynamic_path = f"{database_dir}/dynamic_macros_program.json"
-    dynamic_flag_path = f"{database_dir}/dynamic_flag.json"  # f"{database_dir}/dynamic_cond.json"
+    dynamic_flag_path = f"{database_dir}/dynamic_flag.json"
     dynamic_const_path = f"{database_dir}/dynamic_const.json"
 
     if_path = f"{database_dir}/if_macros.json"
     macro_func_path = f"{database_dir}/macro_func.json"
 
-    output_dir = target_dir #output_dir = f"test_out" #output_dir = target_dir # Production
+    output_dir = target_dir # Production
 
     # get a backup
     target_tmp = tmp_backup_directory(target_dir)
@@ -8336,8 +8428,7 @@ def c_create_usedata(file_path, raw_dir, meta_dir, call_path, list_path):
     #c_add_macro_usage(source_path, meta_dir, all_macro_path)
 
 
-
-def get_ref_files(c_path, dep_json_path):  # , c_lib_path, c_build_path, c_cargo_path
+def get_ref_files(c_path, dep_json_path):
     include_files = []
     dep_json = read_json(dep_json_path)
 
@@ -8357,21 +8448,16 @@ def get_ref_files(c_path, dep_json_path):  # , c_lib_path, c_build_path, c_cargo
         if found:
             break
 
-    # include_files.append(c_lib_path)
-    # include_files.append(c_build_path)
-    # include_files.append(c_cargo_path)
-
     return include_files
 
 
-def c_reform_usedata(file_path, raw_dir, meta_dir, dep_json_path): # , c_lib_path, c_build_path, c_cargo_path
-
+def c_reform_usedata(file_path, raw_dir, meta_dir, dep_json_path):
     # For use data, search for types missing source information (needed for function signatures)
     use_meta_data, use_meta_path = obtain_metadata(file_path, meta_dir, False, None, "use")
     if use_meta_data is None:
         return
 
-    include_files = get_ref_files(file_path, dep_json_path)  # , c_lib_path, c_build_path, c_cargo_path
+    include_files = get_ref_files(file_path, dep_json_path) 
     include_files.append(file_path)
 
     filtered_data = []
@@ -8509,14 +8595,6 @@ def process_find_headers(entry, analyzer_path, compile_dir):
 
 def find_headers(target_dir, database_dir, dep_json_path, compile_dir, compile_json, round_id):
     analyzer_path = f"{C_PARSER_HOME}/include_finder/build/analyzer" 
-
-    # Path normalization
-    """
-    compile_dir = find_compile_commands_json(target_dir)
-    compile_dir = Path(compile_dir)
-    compile_json = compile_dir / "compile_commands.json"
-    print(compile_json)
-    """
 
     # Check if compile_commands.json exists
     if not compile_json.exists():
@@ -8688,13 +8766,9 @@ def find_headers(target_dir, database_dir, dep_json_path, compile_dir, compile_j
             all_sources.add(src)
 
     # Save the dependency JSON
-    #dep_json_path = Path(database_dir) / "header_deps.json"
     write_json(str(dep_json_path), dep_list)
     print(f"Saved header dependencies to: {dep_json_path}")
-
-
     return metadata, database_path
-
 
 
 def process_generate_metadata(entry, analyzer_path, compile_dir):
@@ -9005,109 +9079,8 @@ def generate_metadata(macro_on, target_dir, meta_dir, database_dir, compile_dir,
     write_json(str(database_path), metadata)
     print(f"Saved global metadata to: {database_path}")
 
-    return all_symbols, database_path  #metadata, database_path, macro_dep_path
+    return all_symbols, database_path 
 
-
-"""
-# Classify symbols by file
-file_symbols = defaultdict(list)
-macro_symbols = defaultdict(list)
-
-for item in all_symbols:
-    if macro_on is False:
-        if 'macro' in item.get('kind'):
-            continue
-
-    definition = item.get('definition', '')
-    start_line = item.get('start_line', None)
-    end_line = item.get('end_line', None)
-
-    # Extract file path from definition
-    if ':' in definition:
-        parts = definition.split(':')
-        if len(parts) >= 3:
-            file_path = parts[0]
-
-            if not os.path.isabs(file_path):
-                file_path = os.path.join(str(compile_dir), file_path)
-
-            file_path = os.path.normpath(file_path)
-
-            try:
-                line_num = int(parts[1])
-                col_num = int(parts[2])
-            except (ValueError, IndexError):
-                line_num = 0
-                col_num = 0
-
-            use_data = item.get('uses', [])
-            for use_item in use_data:
-                if 'definition' in use_item:
-                    def_file_path, def_line, def_col = parse_def_loc(use_item['definition'])
-                    use_item['file_path'] = def_file_path
-                    use_item['start_line'] = def_line
-
-            meta_item = {
-                'kind': item.get('kind', 'unknown'),
-                'name': item.get('name', ''),
-                'definition': definition,
-                'start_line': start_line,
-                'start_column': col_num,
-                'end_line': end_line,
-                'block_start': int(start_line),
-                'block_end': int(end_line),
-                'rust_code': {
-                    'file_path': None,
-                    'start_line': None,
-                    'content': None,
-                },
-                'uses': use_data
-            }
-            if item.get('kind') == 'function':
-                meta_item['signature'] = item.get('signature', '')
-
-            if macro_on is True:
-                if 'macro' in item.get('kind'):
-                    macro_symbols[file_path].append(meta_item)
-                else:
-                    file_symbols[file_path].append(meta_item)
-            else:
-                file_symbols[file_path].append(meta_item)
-
-# Save metadata per file
-print(f"\nSaving per-file metadata...")
-for file_path, symbols in file_symbols.items():
-    if not os.path.exists(file_path):
-        print(f"⚠️  Skipping non-existent file: {file_path}")
-        continue
-
-    meta_path = obtain_metadata(file_path, meta_dir, False, True, "def")
-    meta_path = Path(meta_path)
-
-    if not os.path.exists(meta_path):
-        existing_data = {}
-    else:
-        existing_data = read_json(meta_path)
-
-    for symbol in symbols:
-        name = symbol['name']
-        s_line = symbol['start_line']
-        item_key = f"{name}:{file_path}:{s_line}"
-
-        if item_key not in existing_data:
-            existing_data[item_key] = symbol
-
-    write_json(meta_path, existing_data)
-
-macro_dep_path = f"{database_dir}/macro_deps.json"
-if macro_on is True:
-    write_json(macro_dep_path, macro_symbols)
-
-print(f"\n{'='*60}")
-print(f"📁 Total files with metadata: {len(file_symbols)}")
-print(f"📊 Total symbols: {sum(len(syms) for syms in file_symbols.values())}")
-print(f"{'='*60}\n")
-"""
 
 def update_metadata(all_symbols, meta_dir, database_dir, macro_on):
 
@@ -9541,11 +9514,9 @@ def generate_macro_usage_metadata(target_dir, meta_dir, database_dir, independen
     # Summary of processing results
     print(f"\n{'='*60}")
     print(f"✅ Successfully processed in generate_macro_usage_metadata (batch mode)(batch mode) @round {round_id}")
-    # print(f"📊 Total symbols collected: {len(all_symbols)}")
     print(f"📊 Total symbols collected: {total_count}")
     print(f"{'='*60}\n")
 
-    
     """
     # Wrote independent data independently here
     for item in all_symbols:
@@ -9555,6 +9526,7 @@ def generate_macro_usage_metadata(target_dir, meta_dir, database_dir, independen
 
         item['is_independent'] = get_is_independent(item)
     """
+
     """
     # Create the overall metadata
     metadata = {'macros': all_symbols}
@@ -9570,7 +9542,6 @@ def generate_macro_usage_metadata(target_dir, meta_dir, database_dir, independen
     print(f"Saved global metadata to: {database_path}")
 
     return all_symbols, database_path, metadata
-
 
 
 
@@ -9687,8 +9658,6 @@ def update_macro_usage_metadata(all_symbols, meta_dir, independent_path, flag_pa
     print(f"📁 Total files with usage metadata: {len(file_symbols)}")
     #print(f"📊 Total symbols: {sum(len(syms) for syms in file_symbols.values())}")
     print(f"{'='*60}\n")
-
-    #return metadata, database_path
 
 
 def get_is_independent(macro):
@@ -10046,7 +10015,8 @@ def update_macro_metadata(file_macros, meta_dir):
     print(f"{'='*60}\n")
 
 
-def merge_appearances_with_uses(target_dir, meta_dir, database_dir, macros_usage_data):
+
+def merge_appearances_into_uses(target_dir, meta_dir, database_dir, macros_usage_data):
     """Add appearances that fall within the start_line~end_line range of metadata to uses"""
     
     # Group appearances by file path
@@ -10058,7 +10028,9 @@ def merge_appearances_with_uses(target_dir, meta_dir, database_dir, macros_usage
             continue
         for appearance in macro.get('appearances', []):
             # appearance format: "/path/to/file.c:line:column"
-            parts = appearance.rsplit(':', 3) #2)
+            # print(appearance)
+            # parts = appearance.rsplit(':', 3) #2)
+            parts = appearance['location'].rsplit(':', 3) #2)
             if len(parts) >= 3:
                 file_path = parts[0]
                 line = int(parts[1])
@@ -10137,6 +10109,159 @@ def merge_appearances_with_uses(target_dir, meta_dir, database_dir, macros_usage
         if modified:
             write_json(meta_path, metadata)
 
+
+
+def merge_uses_into_uses(target_dir, meta_dir, database_dir, macros_usage_data):
+    # Copy uses that already exist in macros_usage_data (body-internal references
+    # such as ZLIB_VERSION inside inflateInit) into the matching meta_dir entry,
+    # keyed by definition location. These references are not recoverable from
+    # appearances, so they must be copied directly.
+    uses_by_definition = {}
+    for macro in macros_usage_data.get('macros', []):
+        macro_def = macro.get('definition')
+        if not macro_def:
+            continue
+        macro_uses = macro.get('uses', [])
+        if macro_uses:
+            uses_by_definition[macro_def] = macro_uses
+
+    meta_files = get_all_files(meta_dir)
+
+    for meta_path in meta_files:
+        metadata = read_json(meta_path)
+        modified = False
+
+        for key, meta in metadata.items():
+            meta_definition = meta.get('definition')
+            if not meta_definition:
+                continue
+            if meta_definition not in uses_by_definition:
+                continue
+
+            existing_uses = meta.get('uses', [])
+
+            existing_locations = set()
+            for use in existing_uses:
+                existing_locations.add(use.get('usage_location'))
+
+            new_uses = []
+            for usage_use in uses_by_definition[meta_definition]:
+                usage_loc = usage_use.get('usage_location')
+                if usage_loc in existing_locations:
+                    continue
+                new_uses.append(usage_use)
+                existing_locations.add(usage_loc)
+
+            if new_uses:
+                meta['uses'] = existing_uses + new_uses
+                modified = True
+
+        if modified:
+            write_json(meta_path, metadata)
+
+
+
+def merge_uses_into_appearances(target_dir, meta_dir, database_dir, macros_usage_data):
+    # For each macro reference (kind == "macro") appearing in some macro's body,
+    # register that body-internal usage_location as an appearance of the
+    # referenced macro, keyed by the referenced macro's definition location.
+    # This makes the renamer rewrite the body-internal occurrence.
+
+    # Collect body-internal references grouped by referenced definition.
+    appearances_to_add = defaultdict(list)  # definition -> [usage_location, ...]
+    for macro in macros_usage_data.get('macros', []):
+        for use in macro.get('uses', []):
+            if use.get('kind') != 'macro':
+                continue
+            ref_definition = use.get('definition')
+            usage_location = use.get('usage_location')
+            if not ref_definition or not usage_location:
+                continue
+            appearances_to_add[ref_definition].append(usage_location)
+
+    meta_files = get_all_files(meta_dir)
+
+    for meta_path in meta_files:
+        metadata = read_json(meta_path)
+        modified = False
+
+        for key, meta in metadata.items():
+            meta_definition = meta.get('definition')
+            if not meta_definition:
+                continue
+            if meta_definition not in appearances_to_add:
+                continue
+
+            existing_appearances = meta.get('appearances', [])
+
+            existing_locations = set()
+            for appearance in existing_appearances:
+                existing_locations.add(appearance.get('location'))
+
+            for usage_location in appearances_to_add[meta_definition]:
+                if usage_location in existing_locations:
+                    continue
+                existing_appearances.append({
+                    "location": usage_location,
+                    ELEMENT_KEY1: None, #[""],
+                    ELEMENT_KEY2: None, #[""],
+                    ELEMENT_KEY3: None, #[""],
+                })
+                existing_locations.add(usage_location)
+                modified = True
+
+            meta['appearances'] = existing_appearances
+
+        if modified:
+            write_json(meta_path, metadata)
+
+
+def merge_uses_into_entire_appearances(target_dir, database_dir, macros_usage_data):
+    # Index macros by definition location to resolve a use back to the macro.
+    macro_by_definition = {}
+    for macro in macros_usage_data.get('macros', []):
+        macro_def = macro.get('definition')
+        if macro_def:
+            macro_by_definition[macro_def] = macro
+
+    for parent_macro in macros_usage_data.get('macros', []):
+        # Collect the VAL1 set of the parent macro's appearances, so the
+        # body-internal reference inherits the VAL1s where the parent expanded.
+        parent_VAL1s = []
+        for appearance in parent_macro.get('appearances', []):
+
+            for VAL1 in appearance.get(ELEMENT_KEY1, []):
+                if VAL1 and VAL1 not in parent_VAL1s:
+                    parent_VAL1s.append(VAL1)
+
+        for use in parent_macro.get('uses', []):
+            if use.get('kind') != 'macro':
+                continue
+            ref_definition = use.get('definition')
+            usage_location = use.get('usage_location')
+            if not ref_definition or not usage_location:
+                continue
+            if ref_definition not in macro_by_definition:
+                continue
+
+            ref_macro = macro_by_definition[ref_definition]
+
+            already = False
+            for appearance in ref_macro.get('appearances', []):
+                if appearance.get('location') == usage_location:
+                    already = True
+                    break
+            if already:
+                continue
+
+            ref_macro.setdefault('appearances', []).append({
+                "location": usage_location,
+                ELEMENT_KEY1: parent_VAL1s if parent_VAL1s else [""], # Warning!!
+                ELEMENT_KEY2: [""], # Warning!!
+                ELEMENT_KEY3: [""], # Warning!!
+            })
+
+    return macros_usage_data
 
 
 def resolve_addresses(binary_path: str, addresses: list[str]) -> dict[str, str]:
@@ -10298,7 +10423,6 @@ def parse_trace(trace_path: str, base_dir: str, output_path: str, is_rust: bool)
                 out.write(f"\n=== Thread {tid} ===\n\n")
 
             stack = []
-
             if is_rust is False:
                 for typ, depth, func_addr, caller_addr in thread_data:
                     if line_count >= MAX_OUTPUT_LINES: 
