@@ -1090,10 +1090,15 @@ def build_relationship(function_metadata):
         file_path, start_line, _ = parse_def_loc(item['definition'])
                     
         func_id = f"{func_name}@{file_path}:{start_line}"
+
+        signature = None
+        if 'signature' in item:
+            signature = item['signature']
+
         func_info = {
             'id': func_id,
             'name': func_name,
-            'signature': item['signature'], #, ''),
+            'signature': signature, #item['signature'], #, ''),
             'file_path': file_path,
             #'is_static': item['is_static'], #, False),
             'def_start_line': start_line,
