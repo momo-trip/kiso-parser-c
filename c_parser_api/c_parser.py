@@ -874,14 +874,14 @@ def add_included(json_file_path, sign):
 
 
 def analyze_function(target_dir, meta_dir, dep_json_path, build_dir, database_dir,
-                     macro_finder, div_meta_dir, build_path, 
+                     div_meta_dir, build_path, 
                      taken_directive_path, unordered_taken_directive_path, all_directive_path,
                      all_macros_path, taken_macros_path, guards_path, guarded_macros_path, independent_path, flag_path, const_path, cfg_path,
                      is_program_path
                      ):
     
     # 1st round: parsing # If not split into multiple parts, the line numbers will change
-    parse_all("call", target, macro_finder, target_dir, meta_dir, div_meta_dir, database_dir, build_path, 
+    parse_all("call", target, target_dir, meta_dir, div_meta_dir, database_dir, build_path, 
                  taken_directive_path, unordered_taken_directive_path, all_directive_path, dep_json_path, is_program_path, 
                  all_macros_path, taken_macros_path, guards_path, guarded_macros_path, independent_path, flag_path, const_path,
                  None, None, global_path)
@@ -1830,8 +1830,14 @@ def find_c_files_from_compile_db(target_dir):
 
 
 
-def run_macro_finder(macro_finder, c_file, compile_db_dir, target_dir, output_handle):
+def run_macro_finder(c_file, compile_db_dir, target_dir, output_handle):
     """Run macro-finder and write the results to a file"""
+    
+    if BASELINE is True:
+        macro_finder = f"{MACRO_PARSER_HOME}/parsers/macro_finder/build/macro-finder"
+    else:
+        macro_finder = f"{MACRO_PARSER_HOME}/macro_finder/build/macro-finder"
+    
     target_dir = Path(target_dir)
 
     # Build command line arguments
@@ -1958,9 +1964,14 @@ def convert_to_absolute_paths(compile_commands_path='compile_commands.json'):
         return False
 
 
-def run_finder(macro_finder, target_dir, output_file, compile_json_dir, compile_json, round_id):
+def run_finder(target_dir, output_file, compile_json_dir, compile_json, round_id):
     target_dir = Path(target_dir)
     compile_commands = read_json(compile_json)
+
+    if BASELINE is True:
+        macro_finder = f"{MACRO_PARSER_HOME}/parsers/macro_finder/build/macro-finder"
+    else:
+        macro_finder = f"{MACRO_PARSER_HOME}/macro_finder/build/macro-finder"
 
     c_files = []
     for entry in compile_commands:
@@ -2046,7 +2057,7 @@ def run_finder(macro_finder, target_dir, output_file, compile_json_dir, compile_
     print(f"\nResults written to: {output_file}")
 
 
-def run_finder_all(macro_finder, target_dir, output_file):
+def run_finder_all(target_dir, output_file):
     target_dir = Path(target_dir)
     
     # Recursively search for compile_commands.json
@@ -2094,7 +2105,7 @@ def run_finder_all(macro_finder, target_dir, output_file):
             fail_count = 0
             
             for c_file in c_files:
-                if run_macro_finder(macro_finder, c_file, compile_db_dir, target_dir, f):
+                if run_macro_finder(c_file, compile_db_dir, target_dir, f):
                     success_count += 1
                 else:
                     fail_count += 1
@@ -7727,7 +7738,7 @@ def strip_cc1_entries(path: str) -> None:
 
 
 
-def parse_all(round_id, target, macro_finder, target_dir, meta_dir, div_meta_dir, database_dir, build_path, 
+def parse_all(round_id, target, target_dir, meta_dir, div_meta_dir, database_dir, build_path, 
                  taken_directive_path, unordered_taken_directive_path, all_directive_path, dep_json_path, is_program_path,  # unordered_taken_directive_path, 
                  all_macros_path, taken_macros_path, guards_path, guarded_macros_path, independent_path, flag_path, const_path,
                  given_compile_dir, given_compile_json_path, global_path):
@@ -7876,7 +7887,7 @@ def parse_all(round_id, target, macro_finder, target_dir, meta_dir, div_meta_dir
             # Execute after dep_json_path has been generated
             generate_is_program(target_dir, dep_json_path, is_program_path)
 
-        futures["run_finder"] = pool.submit(run_finder, macro_finder, target_dir, output_file, compile_dir, compile_json_path, round_id)
+        futures["run_finder"] = pool.submit(run_finder, target_dir, output_file, compile_dir, compile_json_path, round_id)
 
         # -- #
         recreate_directory(meta_dir)
@@ -8414,7 +8425,7 @@ def merge_ranges(ranges):
 
 
 
-def setup_macro_baseline(llm_on, target, macro_finder, target_dir, database_dir, meta_dir, div_meta_dir, build_path, cfg_path, target_path, marker,  
+def setup_macro_baseline(llm_on, target, target_dir, database_dir, meta_dir, div_meta_dir, build_path, cfg_path, target_path, marker,  
                             list_path, dep_json_path, custom_headers_dir, custom_json_path, custom_header_path,
                             llm_choice, llm_instance, token_path, chat_dir, all_macros_path, taken_macros_path, 
                             all_directive_path, taken_directive_path, is_program_path, global_path,
@@ -8457,7 +8468,7 @@ def setup_macro_baseline(llm_on, target, macro_finder, target_dir, database_dir,
 
     #---------------------------------------------
     # 1st round: parsing # Line numbers change if not split into multiple rounds
-    parse_all("1", target, macro_finder, target_dir, meta_dir, div_meta_dir, database_dir, build_path, 
+    parse_all("1", target, target_dir, meta_dir, div_meta_dir, database_dir, build_path, 
                  taken_directive_path, unordered_taken_directive_path, all_directive_path, dep_json_path, is_program_path, 
                  all_macros_path, taken_macros_path, guards_path, guarded_macros_path, independent_path, flag_path, const_path,
                  None, None, global_path)  # , cfg_path
@@ -9472,7 +9483,10 @@ def process_generate_macro_usage_metadata(entry, analyzer_path, compile_dir):
 
 def generate_macro_usage_metadata(target_dir, meta_dir, database_dir, independent_path, flag_path, compile_dir, compile_json, round_id):
 
-    analyzer_path = f"{C_PARSER_HOME}/usage_macro_ref_analyzer/build/analyzer"
+    if BASELINE is True:
+        analyzer_path = f"{C_PARSER_HOME}/parsers/usage_macro_ref_analyzer/build/analyzer"
+    else:
+        analyzer_path = f"{C_PARSER_HOME}/usage_macro_ref_analyzer/build/analyzer"
 
     # Path normalization
     """
@@ -9858,8 +9872,11 @@ def generate_macro_metadata(target_dir, meta_dir, database_dir, independent_path
     """
     Specify the directory containing compile_commands.json, run the tool created in macro_analyzer.cpp in batch, extract macro metadata (JSON), and save it split by file.
     """
-    macro_analyzer_path = f"{MACRO_PARSER_HOME}/macro_analyzer/build/macro_analyzer"
 
+    if BASELINE is True:
+        macro_analyzer_path = f"{MACRO_PARSER_HOME}/parsers/macro_analyzer/build/macro_analyzer"
+    else:
+        macro_analyzer_path = f"{MACRO_PARSER_HOME}/macro_analyzer/build/macro_analyzer"
 
     if not compile_json.exists():
         raise FileNotFoundError(f"compile_commands.json not found at: {compile_json}")

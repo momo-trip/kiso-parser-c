@@ -30,7 +30,7 @@ target_link_libraries(analyzer
   clangSerialization
   clangAPINotes
   clangEdit
-  clangIndex        # ← これを追加！
+  clangIndex 
   clangRewrite
   clangDriver
   ${llvm_libs}
