@@ -7464,7 +7464,7 @@ def tranform_pragma(
     guard_root: str | None = None,
 ) -> bool:
 
-    binary = "/root/kiso-parser-macro/pragma_finder/build/pragma-finder"
+    binary = f"{MACRO_PARSER_HOME}/pragma_finder/build/pragma-finder"
     jsonl_output = Path(database_dir) / "pragmas.jsonl"
 
     #compile_db_dir = Path(compile_db_dir)
@@ -7762,7 +7762,6 @@ def parse_all(round_id, target, macro_finder, target_dir, meta_dir, div_meta_dir
         strip_cc1_entries(compile_json_path)
 
         changed = tranform_pragma(compile_dir, database_dir, target_dir)
-        #tranform_pragma("/root/macrust-code/trans_c_0000/Python-3.13.3", "/root/macrust-code/database_0000", "/root/macrust-code/trans_c_0000/Python-3.13.3")
 
         if changed is True:
             error_output, std_output = run_script_wo_log(build_path, 10000, True, None, option)
