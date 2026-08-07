@@ -127,27 +127,32 @@ from llm_api import (
     save_coverage_report
 )
 
-# from element_api import (
-#     ELEMENT_KEY1,
-#     ELEMENT_KEY2,
-#     ELEMENT_KEY3,
-# )
-
-ELEMENT_KEY1 = "key1"
-ELEMENT_KEY2 = "key2"
-ELEMENT_KEY3 = "key3"
+LLM_ON = False
+WEIGHT = None
 
 
-MACRO_HOME = "/root/SmartC2Rust/macro"
-TRANS_HOME = "/root/SmartC2Rust/trans"
-C_PARSER_HOME = "/root/kiso-parser-c"
-MACRO_PARSER_HOME = "/root/kiso-parser-macro"
+_ROOT = Path(__file__).resolve().parent.parent
+BASE_DIR = _ROOT.parent
+
+MACRO_HOME = f"{BASE_DIR}/SmartC2Rust/macro"
+TRANS_HOME = f"{BASE_DIR}/SmartC2Rust/trans"
+C_PARSER_HOME = f"{BASE_DIR}/kiso-parser-c"
+MACRO_PARSER_HOME = f"{BASE_DIR}/kiso-parser-macro"
 
 C_EXTS = ['.h', '.c', '.mdh', '.epro', '.pro', '.trm']
 
-LLM_ON = False
-WEIGHT = None
-BASELINE = True #False
+BASELINE = not (_ROOT / "usage_macro_ref_analyzer").is_dir() # BASELINE = False #True
+
+if BASELINE:
+    ELEMENT_KEY1 = "key1"
+    ELEMENT_KEY2 = "key2"
+    ELEMENT_KEY3 = "key3"
+else:
+    from element_api import (
+        ELEMENT_KEY1,
+        ELEMENT_KEY2,
+        ELEMENT_KEY3,
+    )
 
 @contextmanager
 def timeout(seconds):
@@ -234,6 +239,8 @@ def generate_is_program(target_dir, dep_json_path, is_program_path):
         
         program_files.add(file_path)
     
+    cmd_path = f"{os.path.abspath(target_dir)}/<command line>"
+    program_files.add(cmd_path)
     write_json(is_program_path, list(program_files))
     return program_files
 
@@ -241,7 +248,7 @@ def generate_is_program(target_dir, dep_json_path, is_program_path):
 
 def is_builtin_path(file_path):
     """Check if path refers to a compiler built-in or command line."""
-    BUILTIN_MARKERS = ('<built-in>', '<command line>', '<scratch space>')
+    BUILTIN_MARKERS = ('<built-in>', '<scratch space>') # '<command line>', 
     if not file_path:
         return True
     base = file_path.rsplit('/', 1)[-1]
@@ -1078,27 +1085,20 @@ def build_relationship(function_metadata):
     func_id_to_info = {} 
     name_to_ids = {} 
     
-    for item in function_metadata:
-        if item.get('kind') == 'function':
-
+    for key, item in function_metadata.items():
+        if item['kind'] == 'function':
             func_name = item['name']
-            file_path = item.get('def_file_path', '')
-            start_line = item.get('def_start_line', 0)
-            
+            file_path, start_line, _ = parse_def_loc(item['definition'])
+                        
             func_id = f"{func_name}@{file_path}:{start_line}"
-            
-            # if func_name not in name_to_ids:
-            #     name_to_ids[func_name] = []
-            # name_to_ids[func_name].append(func_id)
-            
             func_info = {
                 'id': func_id,
                 'name': func_name,
-                'signature': item.get('signature', ''),
+                'signature': item['signature'], #, ''),
                 'file_path': file_path,
-                'is_static': item.get('is_static', False),
+                #'is_static': item['is_static'], #, False),
                 'def_start_line': start_line,
-                'def_end_line': item.get('def_end_line'),
+                'def_end_line':item['end_line'], # item['def_end_line'], #),
                 'callers': [],
                 'callees': [],
                 'call_sites': []   
@@ -1107,26 +1107,31 @@ def build_relationship(function_metadata):
             functions[func_id] = func_info
     
     # Step 2: Build call relationships
-    for item in function_metadata:
-        if item.get('kind') == 'function' and item.get('callees'):
+    for key, item in function_metadata.items():
+        if item.get('kind') == 'function' and item['uses']: #item.get('callees'):
             caller_name = item['name']
-            caller_file = item.get('def_file_path', '')
-            caller_line = item.get('def_start_line', 0)
+            # caller_file = item['file_path']
+            # caller_line = item['start_line']
+
+            caller_file, caller_line, _ = parse_def_loc(item['definition'])
             caller_id = f"{caller_name}@{caller_file}:{caller_line}"
             
             if caller_id not in functions:
                 continue
 
-            for call_site in item.get('callees', []):
+            for call_site in item['uses']: #item.get('callees', []):
+                if 'kind' in call_site and call_site['kind'] != 'function':
+                    continue
                 callee_name = call_site['name']
-                callee_file = call_site.get('def_file_path', '')
-                callee_line = call_site.get('def_start_line', 0)
+                callee_file = call_site['file_path']
+                callee_line = call_site['start_line']
                 
                 callee_id = f"{callee_name}@{callee_file}:{callee_line}"
 
+                # call_file = call_site['call_file_path']
+                # call_line = call_site['call_start_line']
 
-                call_file = call_site.get('call_file_path', '')
-                call_line = call_site.get('call_start_line', 0)
+                call_file, call_line, _ = parse_def_loc(call_site['usage_location'])
                 callsite_id = f"{callee_name}@{call_file}:{call_line}"
 
                 if callee_id not in functions:
@@ -1183,16 +1188,17 @@ def analyze_call_relationship(meta_dir, callee_path, target_dir, is_program_path
                 meta_files.append(file_path)
 
     # 1. Load metadata
-    function_metadata = []
+    function_metadata = {}#[]
     for meta_path in meta_files:
         data = read_json(meta_path)
-        function_metadata.extend(data)
+        # function_metadata.extend(data)
+        function_metadata.update(data)
 
     if not function_metadata:
         print("Failed to load metadata")
         return
     
-    print(f"Loaded function metadata: {len(function_metadata)} entries")
+    # print(f"Loaded function metadata: {len(function_metadata)} entries")
     
     # 2. Build call graph
     call_graph = build_relationship(function_metadata)
@@ -4524,9 +4530,11 @@ def insert_custom_header_include(lines, first_use_line, source_file_path, header
 
 
 def check_is_in_target_dir(file_path, target_dir, program_files):
+    if "undefined" in file_path:
+        return None
 
     if '<command line>' in str(file_path):
-        return False 
+        return True #False 
     
     if '<built-in>' in str(file_path):
         return False 
@@ -4543,6 +4551,7 @@ def check_is_in_target_dir(file_path, target_dir, program_files):
     # except:
     
     return False
+
 
 
 def insert_include_before_line(lines, target_line, source_file_path, header_file_path):
@@ -4606,10 +4615,19 @@ def has_top_level_or(s):
 
 def condition_negates(condition, name):
     """True if `condition` contains !defined(name) / !defined name (paren optional)."""
-    pat = re.compile(
-        r'!\s*defined\s*\(?\s*' + re.escape(name) + r'\b'
-    )
-    return bool(pat.search(condition))
+    n = re.escape(name)
+    if re.search(r'!\s*defined\s*\(?\s*' + n + r'\b', condition):
+        return True
+
+    for grp in re.finditer(r'!\s*\(([^()]*)\)', condition): # TODO: needs to be refined
+        inner = grp.group(1)
+        if re.search(r'\bdefined\s*\(?\s*' + n + r'\b', inner):
+            return True
+
+    # pat = re.compile(
+    #     r'!\s*defined\s*\(?\s*' + re.escape(name) + r'\b'
+    # )
+    return False #return bool(pat.search(condition))
 
 
 def extract_guarded_names(if_info):
@@ -4628,8 +4646,41 @@ def extract_guarded_names(if_info):
         name = m.get('name')
         if name and condition_negates(condition, name):
             names.add(name)
+
     return names
 
+
+def condition_affirms(condition, name):
+    """
+    True if `condition` affirmatively tests `defined(name)` (i.e. `#if defined(M)`
+    or `#ifdef M`) without negating it. Used to detect the `#if defined(M) ...
+    #else ... #define M` self-guard pattern, where the negation lives in the
+    #else branch rather than in the condition text.
+    """
+    if not condition:
+        return False
+    n = re.escape(name)
+    if re.search(r'\bdefined\s*\(?\s*' + n + r'\b', condition):
+        # Must not be the negated form (that is handled by condition_negates).
+        return not condition_negates(condition, name)
+    return False
+
+
+def extract_affirm_guarded_names(if_info):
+    """
+    Return names M whose #if condition affirmatively tests `defined(M)`, so that
+    the #else branch behaves as a `!defined(M)` self-guard. The caller must still
+    verify that M is actually (re)defined inside the #else branch.
+    """
+    condition = if_info.get('condition', '') or ''
+    if not condition:
+        return set()
+    names = set()
+    for m in if_info.get('macros', []):
+        name = m.get('name')
+        if name and condition_affirms(condition, name):
+            names.add(name)
+    return names
 
 
 def detect_include_guards(all_directive_path, target_dir, meta_dir, guards_path, is_program_path):
@@ -4669,6 +4720,36 @@ def detect_include_guards(all_directive_path, target_dir, meta_dir, guards_path,
                         'block_end': if_info.get('block_end'),
                         'endif': if_info.get('endif', {}),
                     })
+
+                # === added ===
+                # Handle the `#if defined(M) ... #else ... #define M` self-guard.
+                # The condition affirms defined(M), so the negation (the guard)
+                # is in the #else branch. Treat M as guarded only when M is
+                # actually (re)defined inside this #if block (i.e. on the #else
+                # side, between block_start and block_end). These entries skip
+                # the whole-file enclosure check, because such a self-guard
+                # guards only a local definition, not the entire file.
+                b_start = if_info.get('block_start')
+                b_end = if_info.get('block_end')
+                for guarded_name in extract_affirm_guarded_names(if_info):
+                    if not (b_start and b_end):
+                        continue
+                    for d in define_list:
+                        if d.get('name') != guarded_name:
+                            continue
+                        dl = d.get('start_line')
+                        if dl and b_start <= dl <= b_end:
+                            synthetic_ifndef.append({
+                                'name': guarded_name,
+                                'start_line': if_info.get('start_line'),
+                                'block_start': b_start,
+                                'block_end': b_end,
+                                'endif': if_info.get('endif', {}),
+                                'skip_enclose_check': True,
+                            })
+                            break
+                # === ended ===
+
         ifndef_list = list(ifndef_list) + synthetic_ifndef
 
         if not ifndef_list or not define_list:
@@ -4700,6 +4781,16 @@ def detect_include_guards(all_directive_path, target_dir, meta_dir, guards_path,
             define_found = None
             for d in matching_defines:
                 def_line = d.get('start_line')
+                # === added ===
+                # For else-side self-guards, the #define is in the #else branch,
+                # not adjacent to the #if line; accept any define inside the block.
+                if ifndef_info.get('skip_enclose_check'):
+                    if def_line and block_start and block_end \
+                       and block_start <= def_line <= block_end:
+                        define_found = d
+                        break
+                    continue
+                # === ended ===
                 if def_line and abs(def_line - ifndef_line) <= 2:
                     define_found = d
                     break
@@ -4711,26 +4802,36 @@ def detect_include_guards(all_directive_path, target_dir, meta_dir, guards_path,
             guard_start = block_start or ifndef_line
             guard_end = block_end or endif_line
             
-            # Check with metadata whether it encloses all other elements
-            metadata, _ = obtain_metadata(file_path, meta_dir, False, None, "def")
-            
-            encloses_all = True
-            if metadata:
-                for key, meta in metadata.items():
-                    meta_start = meta.get('block_start')
-                    meta_end = meta.get('block_end')
-                    
-                    if meta_start is None or meta_end is None:
-                        continue
-                    
-                    # Skip itself
-                    if meta_start == guard_start and meta_end == guard_end:
-                        continue
-                    
-                    # If out of range, it is not an include guard
-                    if meta_start < guard_start or meta_end > guard_end:
-                        encloses_all = False
-                        break
+            # === added ===
+            # Self-guards produced from the `#if defined(M) ... #else` pattern
+            # guard only a local (re)definition, not the whole file, so they
+            # must not be required to enclose every other directive.
+            if ifndef_info.get('skip_enclose_check'):
+                encloses_all = True
+            else:
+                # === ended ===
+
+                # Check with metadata whether it encloses all other elements
+                metadata, _ = obtain_metadata(file_path, meta_dir, False, None, "def")
+                
+                encloses_all = True
+                if metadata:
+                    for key, meta in metadata.items():
+                        meta_start = meta.get('block_start')
+                        meta_end = meta.get('block_end')
+                        
+                        if meta_start is None or meta_end is None:
+                            continue
+                        
+                        # Skip itself
+                        if meta_start == guard_start and meta_end == guard_end:
+                            continue
+                        
+                        # If out of range, it is not an include guard
+                        if meta_start < guard_start or meta_end > guard_end:
+                            encloses_all = False
+                            break
+                ## 
             
             if not encloses_all:
                 continue
@@ -7028,8 +7129,14 @@ def append_compile_json_path(compile_json_path, database_dir): #f"{database_dir}
     copy_file(compile_json_path, database_dir)
 
 
+def get_global_definition(var_name, def_file_path, global_vars):
+    info = global_vars.get((var_name, def_file_path))
+    if info is None:
+        return None, None, None
+    return info['file_path'], info['start_line'], info['start_column']
 
-def get_global_definition(var_name, global_vars):
+
+def get_global_definition0(var_name, global_vars):
     if var_name not in global_vars:
         return None, None, None
 
@@ -7037,8 +7144,10 @@ def get_global_definition(var_name, global_vars):
 
 
 def detect_global_vars(target_dir, meta_dir, global_path, is_program_path):
-
+    
     global_vars = {} #[]
+    parsed_keys = set()
+
     parsed_names = []
     meta_files = get_all_files(meta_dir)
     program_files = set(read_json(is_program_path))
@@ -7055,6 +7164,14 @@ def detect_global_vars(target_dir, meta_dir, global_path, is_program_path):
             if is_system_file(def_file_path, program_files):
                 continue
 
+            key = (name, def_file_path)
+            parsed_keys.add(key)
+            global_vars[key] = {
+                'file_path': def_file_path,
+                'start_line': def_start_line,
+                'start_column': def_start_column,
+            }
+            """
             parsed_names.append(name)
 
             if name not in global_vars:
@@ -7064,6 +7181,7 @@ def detect_global_vars(target_dir, meta_dir, global_path, is_program_path):
                 'start_line' : def_start_line,
                 'start_column' : def_start_column
             }
+            """
 
     compile_commands_dir = find_compile_commands_json(target_dir)
     cc_path = os.path.join(compile_commands_dir, "compile_commands.json")
@@ -7110,8 +7228,48 @@ def detect_global_vars(target_dir, meta_dir, global_path, is_program_path):
         for m in pattern.finditer(bindings):
             var_name = m.group(1)
             rust_type = m.group(2).strip()
+            
+            ##
+            def_file_path = file_path if (var_name, file_path) in parsed_keys else None
+            if def_file_path is None:
+                # ここで参照されているが定義は別ファイルにある extern グローバル
+                candidates = [k for k in parsed_keys if k[0] == var_name]
+                if len(candidates) == 1:
+                    def_file_path = candidates[0][1]
+                elif len(candidates) == 0:
+                    continue
+                else:
+                    # static 所有がないのに定義 TU が複数 -> 本物の曖昧さなので報告
+                    raise ValueError(
+                        f"ambiguous definition for '{var_name}': "
+                        f"{[c[1] for c in candidates]} (seen in {file_path})"
+                    )
 
-            if var_name in all_globals:
+            key = (var_name, def_file_path)
+
+            if key in all_globals:
+                if all_globals[key]["rust_type"] != rust_type:
+                    raise ValueError(
+                        f"type conflict for '{var_name}' at {def_file_path}: "
+                        f"{all_globals[key]['rust_type']} vs {rust_type} "
+                        f"(seen via {file_path})"
+                    )
+                continue
+
+            dfp, dsl, dsc = get_global_definition(var_name, def_file_path, global_vars)
+            all_globals[key] = {
+                "var_name": var_name,
+                "rust_type": rust_type,
+                "definition": {
+                    "file_path": dfp,
+                    "start_line": dsl,
+                    "start_column": dsc,
+                },
+            }
+    globals_list = sorted(all_globals.values(), key=lambda x: (x["var_name"], x["definition"]["file_path"] or ""))
+    ###
+    """
+                if var_name in all_globals:
                 # If the same variable is found in multiple files, verify type consistency
                 if all_globals[var_name]["rust_type"] != rust_type:
                     raise ValueError(f"WARNING: type conflict for '{var_name}': "
@@ -7135,6 +7293,7 @@ def detect_global_vars(target_dir, meta_dir, global_path, is_program_path):
             #"source_file": os.path.relpath(file_path, target_dir_abs),
 
     globals_list = sorted(all_globals.values(), key=lambda x: x["var_name"])
+    """
     os.makedirs(os.path.dirname(global_path), exist_ok=True)
     write_json(global_path, globals_list)
 
@@ -7574,7 +7733,6 @@ def parse_all(round_id, target, macro_finder, target_dir, meta_dir, div_meta_dir
                  given_compile_dir, given_compile_json_path, global_path):
     
     output_file = f"{database_dir}/macro_finder_results.txt"
-    
     #unordered_taken_directive_path = f"{database_dir}/output_used.json"
     ordered_all_directive_path = f"{database_dir}/all_output_def.json"
 
@@ -7706,7 +7864,7 @@ def parse_all(round_id, target, macro_finder, target_dir, meta_dir, div_meta_dir
 
         # ---- Step : find_headers || run_finder ----
         futures = {}
-        if round_id in ["call", "1", "2", "3", "all"]:
+        if round_id in ["call", "1", "2", "3", "all"]: # , "4"
             compile_log_path = f'{database_dir}/compile.log'
             build_dir = find_compile_commands_json(target_dir)
             #analyze_dependencies(target_dir, dep_json_path, build_path, compile_log_path, build_dir, database_dir)
@@ -7725,7 +7883,7 @@ def parse_all(round_id, target, macro_finder, target_dir, meta_dir, div_meta_dir
         recreate_directory(meta_dir)
         
         # Added here -> needed during rewriting  # This retrieves non-macro elements
-        if round_id in ["call", "1", "2", "3"]: #, "3"]:
+        if round_id in ["call", "1", "2", "3"]: # , "4" #, "3"]:
             macro_on = False
         else:
             macro_on = True
@@ -7790,7 +7948,6 @@ def parse_all(round_id, target, macro_finder, target_dir, meta_dir, div_meta_dir
     # Merge entire uses into metadata appearances # added
     merge_uses_into_appearances(target_dir, meta_dir, database_dir, macros_usage_data)
 
-    #########
     # detect_top_level_uses(gen_macro_usage_meta_path, database_dir, meta_dir)
 
     if round_id == "call":
@@ -7820,7 +7977,6 @@ def parse_all(round_id, target, macro_finder, target_dir, meta_dir, div_meta_dir
                            llm_choice, llm_instance, token_path, chat_dir)
     """
 
-    
     outermost_path = f"{database_dir}/outermost.json"
     combine_with_outermost_conditioned_blocks(all_directive_path, outermost_path, guards_path, target_dir, round_id, meta_dir, is_program_path)
 
@@ -7869,7 +8025,7 @@ def detect_sys_macros(macro_metadata, sys_macros_path):
         '/lib',
         '/opt',
         '<built-in>',
-        '<command line>'
+        #'<command line>'
     ]
     
     def is_program_path(path):
@@ -8670,7 +8826,7 @@ def find_headers(target_dir, database_dir, dep_json_path, compile_dir, compile_j
 
     # Summary of processing results
     print(f"\n{'='*60}")
-    print(f"✅ Successfully processed in finde_headers: {len(compile_commands) - len(failed_files)}/{len(compile_commands)} @round_id {round_id}")
+    print(f"✅ Successfully processed in find_headers: {len(compile_commands) - len(failed_files)}/{len(compile_commands)} @round_id {round_id}")
     print(f"📊 Total includes collected: {len(all_includes)}")
     
     if failed_files:
@@ -9705,11 +9861,6 @@ def generate_macro_metadata(target_dir, meta_dir, database_dir, independent_path
     """
     macro_analyzer_path = f"{MACRO_PARSER_HOME}/macro_analyzer/build/macro_analyzer"
 
-    """
-    compile_dir = find_compile_commands_json(target_dir)
-    compile_dir = Path(compile_dir)
-    compile_json = compile_dir / "compile_commands.json"
-    """
 
     if not compile_json.exists():
         raise FileNotFoundError(f"compile_commands.json not found at: {compile_json}")

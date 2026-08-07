@@ -1,4 +1,4 @@
-// analyzer.cpp
+// usage_info.cpp
 #include "clang/AST/ASTConsumer.h"
 #include "clang/AST/RecursiveASTVisitor.h"
 #include "clang/Frontend/CompilerInstance.h"
@@ -41,8 +41,8 @@ static const std::vector<std::string> DEFAULT_INCLUDE_PATHS = {
     // "-isystem/usr/include/c++/11",
     // "-isystem/usr/include/x86_64-linux-gnu/c++/11",
     // "-isystem/usr/include/c++/11/backward",
-    "-isystem/usr/include/x86_64-linux-gnu",
-    "-isystem/usr/include",
+    // "-isystem/usr/include/x86_64-linux-gnu",
+    // "-isystem/usr/include",
     "-fno-strict-aliasing",
 };
 
@@ -1439,18 +1439,18 @@ void addCustomIncludePaths(ClangTool &Tool) {
           "-Wno-incompatible-function-pointer-types",
           "-Wno-incompatible-pointer-types",
           "-fno-strict-aliasing",
-          "-isystem/usr/lib/llvm-19/lib/clang/19/include",
+        //   "-isystem/usr/lib/llvm-19/lib/clang/19/include",
         };
   
-        if (Filename.ends_with(".cxx") || Filename.ends_with(".cpp") || 
-            Filename.ends_with(".cc") || Filename.ends_with(".C")) {
-          CommonArgs.push_back("-isystem/usr/include/c++/11");
-          CommonArgs.push_back("-isystem/usr/include/x86_64-linux-gnu/c++/11");
-          CommonArgs.push_back("-isystem/usr/include/c++/11/backward");
-        }
+        // if (Filename.ends_with(".cxx") || Filename.ends_with(".cpp") || 
+        //     Filename.ends_with(".cc") || Filename.ends_with(".C")) {
+        //   CommonArgs.push_back("-isystem/usr/include/c++/11");
+        //   CommonArgs.push_back("-isystem/usr/include/x86_64-linux-gnu/c++/11");
+        //   CommonArgs.push_back("-isystem/usr/include/c++/11/backward");
+        // }
   
-        CommonArgs.push_back("-isystem/usr/include/x86_64-linux-gnu");
-        CommonArgs.push_back("-isystem/usr/include");
+        // CommonArgs.push_back("-isystem/usr/include/x86_64-linux-gnu");
+        // CommonArgs.push_back("-isystem/usr/include");
   
         NewArgs.insert(NewArgs.begin() + 1, CommonArgs.begin(), CommonArgs.end());
         return NewArgs;

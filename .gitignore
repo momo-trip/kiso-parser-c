@@ -1,5 +1,6 @@
-
+/element_api/
 /usage_macro_ref_analyzer/
+
 usage_analyzer*/build
 parsers/usage_macro_ref_analyzer*/build
 # usage_macro_ref_analyzer*/build

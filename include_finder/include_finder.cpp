@@ -36,8 +36,8 @@ static const std::vector<std::string> DEFAULT_INCLUDE_PATHS = {
     // "-isystem/usr/include/c++/11",
     // "-isystem/usr/include/aarch64-linux-gnu/c++/11",
     // "-isystem/usr/include/c++/11/backward",
-    "-isystem/usr/include/aarch64-linux-gnu",
-    "-isystem/usr/include",
+    // "-isystem/usr/include/aarch64-linux-gnu",
+    // "-isystem/usr/include",
     "-fno-strict-aliasing",
 };
 
