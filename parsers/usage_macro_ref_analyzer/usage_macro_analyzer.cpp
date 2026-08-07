@@ -34,16 +34,91 @@ using namespace clang::tooling;
 
 static std::string g_compileDir;
 
+// ---- multiarch / libstdc++ version detection (configurable) ----
+static std::string runAndTrim(const std::string &cmd) {
+    std::string out;
+    if (FILE *p = popen(cmd.c_str(), "r")) {
+        char buf[512];
+        while (fgets(buf, sizeof buf, p)) out += buf;
+        pclose(p);
+    }
+    while (!out.empty() && (out.back() == '\n' || out.back() == '\r' || out.back() == ' '))
+        out.pop_back();
+    return out;
+}
 
-static const std::vector<std::string> DEFAULT_INCLUDE_PATHS = {
-    "-resource-dir=/usr/lib/llvm-19/lib/clang/19",
-    "-w",
-    "-Wno-incompatible-function-pointer-types",
-    "-Wno-incompatible-pointer-types",
-    "-isystem/usr/include/aarch64-linux-gnu",
-    "-isystem/usr/include",
-    "-fno-strict-aliasing",
-};
+static std::string probeCompiler() {
+    if (const char *e = std::getenv("KISO_HOST_CXX")) if (*e) return e;
+    for (const char *c : {"/usr/bin/g++", "/usr/bin/c++", "/usr/bin/gcc"})
+        if (fs::exists(c)) return c;
+    return "";
+}
+
+static std::string detectMultiarch() {
+    if (const char *e = std::getenv("KISO_MULTIARCH")) if (*e) return e;
+    std::string cc = probeCompiler();
+    if (!cc.empty()) {
+        std::string ma = runAndTrim(cc + " -dumpmachine 2>/dev/null");
+        if (!ma.empty() && fs::exists("/usr/include/" + ma)) return ma;
+    }
+    return "";
+}
+
+static std::string detectCxxVersion(const std::string &ma) {
+    if (const char *e = std::getenv("KISO_CXX_VER")) if (*e) return e;
+    auto ok = [&](const std::string &v) {
+        return !v.empty() && !ma.empty()
+            && fs::exists("/usr/include/c++/" + v)
+            && fs::exists("/usr/include/" + ma + "/c++/" + v);
+    };
+    std::string cc = probeCompiler();
+    if (!cc.empty()) {
+        std::string v = runAndTrim(cc + " -dumpversion 2>/dev/null");
+        if (auto p = v.find('.'); p != std::string::npos) v.resize(p);
+        if (ok(v)) return v;
+    }
+    std::vector<int> cand;
+    std::error_code ec;
+    for (const auto &e : fs::directory_iterator("/usr/include/c++", ec)) {
+        std::string v = e.path().filename().string();
+        if (!v.empty() && std::isdigit(static_cast<unsigned char>(v[0])) && ok(v))
+            cand.push_back(std::stoi(v));
+    }
+    if (cand.empty()) return "";
+    return std::to_string(*std::max_element(cand.begin(), cand.end()));
+}
+
+static const std::string HOST_MULTIARCH = detectMultiarch();
+static const std::string HOST_CXX_VER   = detectCxxVersion(HOST_MULTIARCH);
+// 
+
+
+
+static std::vector<std::string> buildDefaultIncludePaths() {
+    std::vector<std::string> v = {
+        "-resource-dir=/usr/lib/llvm-19/lib/clang/19",
+        "-w",
+        "-Wno-incompatible-function-pointer-types",
+        "-Wno-incompatible-pointer-types",
+    };
+    if (!HOST_MULTIARCH.empty())
+        v.push_back("-isystem/usr/include/" + HOST_MULTIARCH);
+    v.push_back("-isystem/usr/include");
+    v.push_back("-fno-strict-aliasing");
+    return v;
+}
+
+static const std::vector<std::string> DEFAULT_INCLUDE_PATHS = buildDefaultIncludePaths();
+
+// static const std::vector<std::string> DEFAULT_INCLUDE_PATHS = {
+//     "-resource-dir=/usr/lib/llvm-19/lib/clang/19",
+//     "-w",
+//     "-Wno-incompatible-function-pointer-types",
+//     "-Wno-incompatible-pointer-types",
+//     "-isystem/usr/include/aarch64-linux-gnu",
+//     "-isystem/usr/include",
+//     "-fno-strict-aliasing",
+// };
 
 
 struct UseInfo {
@@ -1143,16 +1218,33 @@ void addCustomIncludePaths(ClangTool &Tool) {
         if (Filename.ends_with(".cxx") || Filename.ends_with(".cpp") ||
             Filename.ends_with(".cc") || Filename.ends_with(".C")) {
 
-          std::vector<std::string> CxxArgs = {
-            "-isystem/usr/include/c++/11",
-            "-isystem/usr/include/aarch64-linux-gnu/c++/11",
-            "-isystem/usr/include/c++/11/backward",
-          };
-          CommonArgs.insert(CommonArgs.end(), CxxArgs.begin(), CxxArgs.end());
+          if (!HOST_CXX_VER.empty() && !HOST_MULTIARCH.empty()) {
+            std::vector<std::string> CxxArgs = {
+              "-isystem/usr/include/c++/" + HOST_CXX_VER,
+              "-isystem/usr/include/" + HOST_MULTIARCH + "/c++/" + HOST_CXX_VER,
+              "-isystem/usr/include/c++/" + HOST_CXX_VER + "/backward",
+            };
+            CommonArgs.insert(CommonArgs.end(), CxxArgs.begin(), CxxArgs.end());
+          }
         }
 
-        CommonArgs.push_back("-isystem/usr/include/aarch64-linux-gnu");
+        if (!HOST_MULTIARCH.empty())
+          CommonArgs.push_back("-isystem/usr/include/" + HOST_MULTIARCH);
         CommonArgs.push_back("-isystem/usr/include");
+        
+        // if (Filename.ends_with(".cxx") || Filename.ends_with(".cpp") ||
+        //     Filename.ends_with(".cc") || Filename.ends_with(".C")) {
+
+        //   std::vector<std::string> CxxArgs = {
+        //     "-isystem/usr/include/c++/11",
+        //     "-isystem/usr/include/aarch64-linux-gnu/c++/11",
+        //     "-isystem/usr/include/c++/11/backward",
+        //   };
+        //   CommonArgs.insert(CommonArgs.end(), CxxArgs.begin(), CxxArgs.end());
+        // }
+
+        // CommonArgs.push_back("-isystem/usr/include/aarch64-linux-gnu");
+        // CommonArgs.push_back("-isystem/usr/include");
 
         NewArgs.insert(NewArgs.begin() + 1, CommonArgs.begin(), CommonArgs.end());
         return NewArgs;
