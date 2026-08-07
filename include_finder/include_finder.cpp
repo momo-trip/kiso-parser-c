@@ -7,6 +7,7 @@
 #include "clang/Lex/PPCallbacks.h"
 #include "clang/Lex/Preprocessor.h"
 #include "clang/Basic/FileEntry.h"
+#include "clang/Tooling/ArgumentsAdjusters.h"
 #include "llvm/ADT/SmallVector.h"
 #include <iostream>
 #include <map>
@@ -297,6 +298,11 @@ int main(int argc, const char **argv) {
         llvm::errs() << "Found " << AllFiles.size() << " source files\n";
         
         ClangTool Tool(*Compilations, AllFiles);
+        //int result = Tool.run(newFrontendActionFactory<IncludeAction>().get());
+        Tool.appendArgumentsAdjuster(getInsertArgumentAdjuster(
+            CommandLineArguments(DEFAULT_INCLUDE_PATHS.begin(),
+                                 DEFAULT_INCLUDE_PATHS.end()),
+            ArgumentInsertPosition::END));
         int result = Tool.run(newFrontendActionFactory<IncludeAction>().get());
         
         printIncludesAsJSON();
