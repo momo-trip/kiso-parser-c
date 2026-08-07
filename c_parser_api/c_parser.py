@@ -1086,6 +1086,100 @@ def build_relationship(function_metadata):
     name_to_ids = {} 
     
     for key, item in function_metadata.items():
+        func_name = item['name']
+        file_path, start_line, _ = parse_def_loc(item['definition'])
+                    
+        func_id = f"{func_name}@{file_path}:{start_line}"
+        func_info = {
+            'id': func_id,
+            'name': func_name,
+            'signature': item['signature'], #, ''),
+            'file_path': file_path,
+            #'is_static': item['is_static'], #, False),
+            'def_start_line': start_line,
+            'def_end_line':item['end_line'], # item['def_end_line'], #),
+            'callers': [],
+            'callees': [],
+            'call_sites': []   
+        }
+        
+        functions[func_id] = func_info
+
+    # Step 2: Build call relationships
+    for key, item in function_metadata.items():
+        if 'uses' in item: #item['uses']: #item.get('callees'):
+            caller_name = item['name']
+
+            caller_file, caller_line, _ = parse_def_loc(item['definition'])
+            caller_id = f"{caller_name}@{caller_file}:{caller_line}"
+            
+            if caller_id not in functions:
+                continue
+
+            for call_site in item['uses']: #item.get('callees', []):
+                """
+                if 'kind' in call_site and call_site['kind'] != 'function':
+                    continue
+                """
+                callee_name = call_site['name']
+                callee_file = call_site['file_path']
+                callee_line = call_site['start_line']
+                
+                callee_id = f"{callee_name}@{callee_file}:{callee_line}"
+
+                # call_file = call_site['call_file_path']
+                # call_line = call_site['call_start_line']
+
+                call_file, call_line, _ = parse_def_loc(call_site['usage_location'])
+                callsite_id = f"{callee_name}@{call_file}:{call_line}"
+
+                if callee_id not in functions:
+                    functions[callee_id] = {
+                        'id': callee_id,
+                        'name': callee_name,
+                        'signature': '',
+                        'file_path': callee_file,
+                        'is_static': False,
+                        'def_start_line': callee_line,
+                        'def_end_line': None,
+                        'callers': [],
+                        'callees': [],
+                        'call_sites': [],
+                        'is_external': True  
+                    }
+                
+                if caller_id not in functions:
+                    functions[caller_id] = {}
+            
+                if callee_id not in functions[caller_id]['callees']:
+                    functions[caller_id]['callees'].append(callee_id)
+                
+                if callee_id not in functions[caller_id]['call_sites']:
+                    functions[caller_id]['call_sites'].append(callsite_id)
+
+                if caller_id not in functions[callee_id]['callers']:
+                    functions[callee_id]['callers'].append(caller_id)
+
+    return functions
+
+
+def build_simple_function_relationship(function_metadata):
+    """
+    Build a call graph with caller and callee information from function metadata.
+    Uses a composite key of function name, file path, and start line to handle
+    functions with the same name.
+    
+    Args:
+        function_metadata: List of JSON metadata entries
+    Returns:
+        Dictionary with unique function identifiers as keys and function info as values
+    """
+    # Step 1: Collect basic function information
+    functions = {}
+    func_id_to_info = {} 
+    name_to_ids = {} 
+    
+    for key, item in function_metadata.items():
         if item['kind'] == 'function':
             func_name = item['name']
             file_path, start_line, _ = parse_def_loc(item['definition'])
@@ -1110,8 +1204,6 @@ def build_relationship(function_metadata):
     for key, item in function_metadata.items():
         if item.get('kind') == 'function' and item['uses']: #item.get('callees'):
             caller_name = item['name']
-            # caller_file = item['file_path']
-            # caller_line = item['start_line']
 
             caller_file, caller_line, _ = parse_def_loc(item['definition'])
             caller_id = f"{caller_name}@{caller_file}:{caller_line}"
