@@ -1,7 +1,11 @@
+
+/usage_macro_ref_analyzer/
 usage_analyzer*/build
-usage_macro_ref_analyzer*/build
+parsers/usage_macro_ref_analyzer*/build
+# usage_macro_ref_analyzer*/build
 include_finder*/build
 #!include_finder/build/analyzer
+
 llvm-project/
 llvm-custom/
 c_parser_api/__pycache__/
@@ -13,3 +17,5 @@ __pycache__/
 *_trace.log
 *.so
 *.so.*
+
+update_parser.sh
