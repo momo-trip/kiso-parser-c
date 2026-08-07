@@ -855,8 +855,17 @@ public:
 
         if (DefRawLoc == 0) return true;
 
-        Expr::EvalResult EvalResult;
-        bool IsConst = E->EvaluateAsRValue(EvalResult, Context);
+        // Expr::EvalResult EvalResult;
+        // bool IsConst = E->EvaluateAsRValue(EvalResult, Context);
+        QualType T = E->getType();
+        bool isAggregate = isa<InitListExpr>(E) ||
+                           (!T.isNull() && (T->isArrayType() || T->isRecordType()));
+
+        bool IsConst = false;
+        if (!isAggregate) {
+            Expr::EvalResult EvalResult;
+            IsConst = E->EvaluateAsRValue(EvalResult, Context);
+        }
 
         // bindgen-compatible: treat string literals as const
         if (!IsConst) {
