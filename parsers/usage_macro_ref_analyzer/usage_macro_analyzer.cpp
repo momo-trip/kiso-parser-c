@@ -8,6 +8,7 @@
 #include "clang/Lex/Preprocessor.h"
 #include "clang/Lex/MacroInfo.h"
 #include "clang/Lex/MacroArgs.h"
+#include "clang/Lex/Lexer.h"
 #include "clang/Basic/FileEntry.h"
 #include "llvm/ADT/SmallVector.h"
 #include "clang/AST/RecursiveASTVisitor.h"
@@ -1005,23 +1006,47 @@ public:
                     if (!ui.pending_ast_resolve) continue;
 
                     auto rkey = std::make_pair(ui.expansion_raw_loc, ui.name);
+
                     auto rit = resolved.find(rkey);
                     if (rit != resolved.end()) {
                         const std::string &declLocStr = rit->second.first;
                         const NamedDecl *ND = rit->second.second;
 
+                        SourceLocation NameLoc = ND->getLocation();
+                        if (NameLoc.isMacroID()) {
+                            StringRef Spelled = Lexer::getImmediateMacroName(
+                                NameLoc, *Analyzer.SM, Context.getLangOpts());
+                            if (!Spelled.empty()) ui.name = Spelled.str();
+                        }
+
                         ui.definition = declLocStr;
                         ui.pending_ast_resolve = false;
 
                         if (isa<FunctionDecl>(ND)) ui.kind = "function";
+                        
+                    // auto rit = resolved.find(rkey);
+                    // if (rit != resolved.end()) {
+                    //     const std::string &declLocStr = rit->second.first;
+                    //     const NamedDecl *ND = rit->second.second;
+
+                    //     ui.definition = declLocStr;
+                    //     ui.pending_ast_resolve = false;
+
+                    //     if (isa<FunctionDecl>(ND)) ui.kind = "function";
+
                         else if (isa<VarDecl>(ND)) ui.kind = "global_var";
                         else if (isa<TypedefDecl>(ND)) ui.kind = "typedef";
                         else if (isa<EnumConstantDecl>(ND)) ui.kind = "enum_constant";
                         else ui.kind = "decl";
 
-                        SourceLocation DeclLoc = ND->getLocation();
+                        // SourceLocation DeclLoc = ND->getLocation();
+                        // ui.file_path = Analyzer.getFilePath(DeclLoc);
+                        // ui.start_line = Analyzer.getLineNumber(DeclLoc);
+                        
+                        SourceLocation DeclLoc = Analyzer.SM->getFileLoc(ND->getLocation());
                         ui.file_path = Analyzer.getFilePath(DeclLoc);
                         ui.start_line = Analyzer.getLineNumber(DeclLoc);
+
                         if (auto *FD = dyn_cast<FunctionDecl>(ND)) {
                             ui.end_line = Analyzer.getLineNumber(FD->getEndLoc());
                         } else {
@@ -1231,7 +1256,7 @@ void addCustomIncludePaths(ClangTool &Tool) {
         if (!HOST_MULTIARCH.empty())
           CommonArgs.push_back("-isystem/usr/include/" + HOST_MULTIARCH);
         CommonArgs.push_back("-isystem/usr/include");
-        
+
         // if (Filename.ends_with(".cxx") || Filename.ends_with(".cpp") ||
         //     Filename.ends_with(".cc") || Filename.ends_with(".C")) {
 
