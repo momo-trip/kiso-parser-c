@@ -1113,8 +1113,8 @@ def build_relationship(function_metadata):
     # Step 2: Build call relationships
     for key, item in function_metadata.items():
         if 'uses' in item: #item['uses']: #item.get('callees'):
-            caller_name = item['name']
 
+            caller_name = item['name']
             caller_file, caller_line, _ = parse_def_loc(item['definition'])
             caller_id = f"{caller_name}@{caller_file}:{caller_line}"
             
@@ -1127,14 +1127,13 @@ def build_relationship(function_metadata):
                     continue
                 """
                 callee_name = call_site['name']
-                callee_file = call_site['file_path']
-                callee_line = call_site['start_line']
-                
+                # callee_file = call_site['file_path']
+                # callee_line = call_site['start_line']
+                callee_file, callee_line, _ = parse_def_loc(call_site['definition'])
                 callee_id = f"{callee_name}@{callee_file}:{callee_line}"
 
                 # call_file = call_site['call_file_path']
                 # call_line = call_site['call_start_line']
-
                 call_file, call_line, _ = parse_def_loc(call_site['usage_location'])
                 callsite_id = f"{callee_name}@{call_file}:{call_line}"
 
@@ -1277,8 +1276,6 @@ def analyze_call_relationship(meta_dir, callee_path, target_dir, is_program_path
                 file_path = os.path.join(root, file)
                 def_file_path = get_file_path_from_meta_path(file_path, meta_dir)
 
-                # if target_dir not in def_file_path:
-                #     continue
                 if is_system_file(def_file_path, program_files):
                     continue
 
