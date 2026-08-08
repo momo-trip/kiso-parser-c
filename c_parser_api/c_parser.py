@@ -3412,7 +3412,7 @@ def save_all_directives(input_file,
     return data
 
 
-    
+
 def save_all_directives_original(input_file, unordered_macros_path, macros_path, database_dir, target_dir, skipped_flag, evaluated_flag):
     """Parse macro-finder output and save to JSON (complete version based on Close information)"""
     
@@ -9166,10 +9166,10 @@ def parse_all(round_id, target, target_dir, meta_dir, div_meta_dir, database_dir
         # All directive macros
         fut_all = pool.submit(save_all_directives, output_file, all_directive_path, ordered_all_directive_path, database_dir, target_dir, False, False)
         fut_taken = pool.submit(save_all_directives, output_file, unordered_taken_directive_path, taken_directive_path, database_dir, target_dir, True, False)
-        """
-
+        
         fut_taken.result()
         fut_all.result()
+        """
 
     macros_usage_data = reform_uses_data(target_dir, macros_usage_data)
 
