@@ -2279,8 +2279,1141 @@ def strip_input(line):
     return line.rstrip(), VAL1, VAL2, VAL3
 
 
+def save_all_directives(input_file,
+                        all_unordered_path, all_macros_path,
+                        taken_unordered_path, taken_macros_path,
+                        database_dir, target_dir):
+    """Parse macro-finder output and save to JSON.
 
-def save_all_directives(input_file, unordered_macros_path, macros_path, database_dir, target_dir, skipped_flag, evaluated_flag):
+    Builds both result sets in a single pass over the log:
+      - data  : every occurrence, active and skipped  (old skipped_flag=False)
+      - taken : active occurrences only               (old skipped_flag=True)
+
+    Entries belonging to both sets are stored as the SAME object, so the extra
+    cost of the second set is limited to its dict/list scaffolding.
+    """
+
+    print("Starting save_all_directives (single pass)...")
+
+    data  = {"files": {}, "macros": {}}   # all occurrences
+    taken = {"files": {}, "macros": {}}   # active occurrences only
+
+    search_key = "appearances"  # uses
+
+    current_file = None
+    endif_mapping = {}
+    current_endif_info = None
+    pending_endif = None
+
+    # One dict is enough: entry_key already carries the directive type and the
+    # active/skipped suffix, so keys of different kinds never collide.
+    seen_map = {}
+
+    # ------------------------------------------------------------------
+    # helpers
+    # ------------------------------------------------------------------
+
+    def _empty():
+        return {"defined": [], "ifdef": [], "ifndef": [], "if": [],
+                "elif": [], "else": [], "endif": []}
+
+    def put_entry(bucket, file_path, entry_key, entry, is_skipped, vals):
+        """Register one directive occurrence.
+
+        On a duplicate key, append the VAL values once and return. The taken
+        side must not append again: it references the very same object, so a
+        second append would duplicate the values. This is safe because every
+        occurrence sharing an entry_key has the same active/skipped state.
+        """
+        prev = seen_map.get(entry_key)
+        if prev is not None:
+            prev[ELEMENT_KEY1].append(vals[0])
+            prev[ELEMENT_KEY2].append(vals[1])
+            prev[ELEMENT_KEY3].append(vals[2])
+            return
+
+        seen_map[entry_key] = entry
+        data["files"].setdefault(file_path, _empty())[bucket].append(entry)
+        if not is_skipped:
+            # Same object, not a copy.
+            taken["files"].setdefault(file_path, _empty())[bucket].append(entry)
+
+    def put_macro(macro_key, use_entry, is_skipped, make_rec, vals):
+        """Register a macro record and, optionally, one appearance.
+
+        make_rec() must return a fresh dict on every call: the "definition"
+        sub-dict cannot be shared, because the all-set also accumulates VAL
+        values from skipped occurrences and resolves active/skipped/body on a
+        first-wins basis. The use_entry itself is shared.
+        """
+        stores = (data,) if is_skipped else (data, taken)
+        for store in stores:
+            m = store["macros"].get(macro_key)
+            if m is None:
+                m = make_rec()
+                store["macros"][macro_key] = m
+            else:
+                d = m["definition"]
+                d[ELEMENT_KEY1].append(vals[0])
+                d[ELEMENT_KEY2].append(vals[1])
+                d[ELEMENT_KEY3].append(vals[2])
+            if use_entry is not None:
+                m[search_key].append(use_entry)
+
+    def mk_rec_defloc(macro_name, def_loc, vals):
+        """Factory for macros referenced from IFDEF / IFNDEF / IF / ELIF.
+
+        Values are bound as arguments: an inline lambda inside a loop would
+        capture the loop variables by reference and corrupt the records.
+        """
+        def _make():
+            p, l, c = parse_def_loc(def_loc)
+            return {
+                "name": macro_name,
+                "definition": {
+                    "file_path": p,
+                    "start_line": l,
+                    "start_column": c,
+                    ELEMENT_KEY1: [vals[0]],
+                    ELEMENT_KEY2: [vals[1]],
+                    ELEMENT_KEY3: [vals[2]],
+                },
+                "is_const": None,
+                "is_flag": None,
+                "is_guard": None,
+                "is_guarded": None,
+                search_key: [],
+            }
+        return _make
+
+    def mk_rec_defined(macro_name, file_path, sl, sc, el, ec,
+                       body, active, vals, sig=None):
+        """Factory for macros introduced by DEFINED / DEFINED_FUNC."""
+        def _make():
+            rec = {"name": macro_name}
+            if sig is not None:
+                # Preserve the original key order: name, signature, definition, ...
+                rec["signature"] = sig
+            rec["definition"] = {
+                "file_path": file_path,
+                "start_line": sl,
+                "start_column": sc,
+                "end_line": el,
+                "end_column": ec,
+                ELEMENT_KEY1: [vals[0]],
+                ELEMENT_KEY2: [vals[1]],
+                ELEMENT_KEY3: [vals[2]],
+                "active": active,
+                "skipped": not active,
+                "body": body,
+            }
+            rec["is_const"] = None
+            rec["is_flag"] = None
+            rec["is_guard"] = None
+            rec["is_guarded"] = None
+            rec[search_key] = []
+            return rec
+        return _make
+
+    # ------------------------------------------------------------------
+    # read
+    # ------------------------------------------------------------------
+
+    if not os.path.exists(input_file):
+        return
+
+    # Step 1: read the whole file
+    with open(input_file, 'r', encoding='utf-8') as f:
+        raw_lines = f.readlines()
+
+    # Step 2: join continuation lines
+    processed_lines = []
+    i = 0
+    while i < len(raw_lines):
+        line = raw_lines[i].rstrip('\r\n')
+
+        # Directive lines such as [IF], [ELIF], ...
+        if re.match(r'^\[(IF|ELIF|IFDEF|IFNDEF|ELSE|ENDIF|DEFINED|UNDEFINED)(?:_\w+)?\]', line):
+            while i + 1 < len(raw_lines):
+                next_line = raw_lines[i + 1].rstrip('\r\n')
+
+                if next_line.lstrip() and next_line.lstrip()[0] == '[':
+                    break
+                if next_line.lstrip().startswith("=> Closes"):
+                    break
+                if next_line.lstrip().startswith("Processing:"):
+                    break
+                if not next_line.strip():
+                    i += 1
+                    break
+
+                line = line.rstrip('\\').rstrip()
+                line += ' ' + next_line.lstrip()
+                i += 1
+
+        # Continuation lines of "=> Closes" as well
+        elif line.lstrip().startswith("=> Closes"):
+            while i + 1 < len(raw_lines):
+                next_line = raw_lines[i + 1].rstrip('\n').rstrip('\r')
+
+                if next_line.lstrip() and next_line.lstrip()[0] == '[':
+                    break
+                if next_line.lstrip().startswith("=> Closes"):
+                    break
+                if next_line.lstrip().startswith("Processing:"):
+                    break
+                if not next_line.strip():
+                    i += 1
+                    break
+
+                line = line.rstrip('\\').rstrip()
+                line += ' ' + next_line.lstrip()
+                i += 1
+
+        processed_lines.append(line)
+        i += 1
+
+    # deallocate raw_lines
+    del raw_lines
+    gc.collect()
+
+    # ------------------------------------------------------------------
+    # parse
+    # ------------------------------------------------------------------
+
+    # Step 3: process the joined lines
+    for idx, line in enumerate(processed_lines):
+        line = line.strip()
+
+        if not line:
+            continue
+
+        if line.startswith("Processing:"):
+            current_file = line.split("Processing:")[1].strip()
+            continue
+
+        line, VAL1, VAL2, VAL3 = strip_input(line)
+        identifier = f":{VAL1}:{VAL3}"
+        vals = (VAL1, VAL2, VAL3)
+
+        # ---------------- [DEFINED] (active) ----------------
+        if line.startswith("[DEFINED]") and not line.startswith("[DEFINED (skipped)]"):
+            match = re.match(r'\[DEFINED\] (.+?):(\d+):(\d+):(\d+):(\d+) - (.+?)(?:\s*->\s*(.+))?$', line)
+            if match:
+                file_path, start_line, start_col, end_line, end_col, macro_name, definition = match.groups()
+                file_path = get_abs_path(file_path)
+                file_path = put_in_target_dir(file_path, target_dir)
+
+                entry_key = f"DEFINED:{file_path}:{start_line}:{start_col}:{macro_name}{identifier}:active"
+                macro_key = f"{macro_name}:{file_path}:{start_line}:{start_col}"
+
+                entry = {
+                    "kind": "macro",
+                    "type": "DEFINED",
+                    "name": macro_name,
+                    "macro_key": macro_key,
+                    "file_path": file_path,
+                    "start_line": int(start_line),
+                    "start_column": int(start_col),
+                    "end_line": int(end_line),
+                    "end_column": int(end_col),
+                    "block_start": int(start_line),
+                    "block_end": int(end_line),
+                    ELEMENT_KEY1: [VAL1],
+                    ELEMENT_KEY2: [VAL2],
+                    ELEMENT_KEY3: [VAL3],
+                    "active": True,
+                    "skipped": False
+                }
+                if definition:
+                    entry["definition_body"] = definition.strip()
+
+                put_entry("defined", file_path, entry_key, entry, False, vals)
+                put_macro(macro_key, None, False,
+                          mk_rec_defined(macro_name, file_path,
+                                         int(start_line), int(start_col),
+                                         int(end_line), int(end_col),
+                                         definition.strip() if definition else None,
+                                         True, vals),
+                          vals)
+
+        # ---------------- [DEFINED (skipped)] (inactive) ----------------
+        elif line.startswith("[DEFINED (skipped)]"):
+            match = re.match(r'\[DEFINED \(skipped\)\] (.+?):(\d+):(\d+):(\d+):(\d+) - (.+?)(?:\s*->\s*(.+))?$', line)
+            if match:
+                file_path, start_line, start_col, end_line, end_col, macro_name, definition = match.groups()
+                file_path = get_abs_path(file_path)
+                file_path = put_in_target_dir(file_path, target_dir)
+
+                entry_key = f"DEFINED:{file_path}:{start_line}:{start_col}:{macro_name}{identifier}:skipped"
+                macro_key = f"{macro_name}:{file_path}:{start_line}:{start_col}"
+
+                entry = {
+                    "kind": "macro",
+                    "type": "DEFINED",
+                    "name": macro_name,
+                    "macro_key": macro_key,
+                    "file_path": file_path,
+                    "start_line": int(start_line),
+                    "start_column": int(start_col),
+                    "end_line": int(end_line),
+                    "end_column": int(end_col),
+                    "block_start": int(start_line),
+                    "block_end": int(end_line),
+                    ELEMENT_KEY1: [VAL1],
+                    ELEMENT_KEY2: [VAL2],
+                    ELEMENT_KEY3: [VAL3],
+                    "active": False,
+                    "skipped": True
+                }
+                if definition:
+                    entry["definition_body"] = definition.strip()
+
+                put_entry("defined", file_path, entry_key, entry, True, vals)
+                put_macro(macro_key, None, True,
+                          mk_rec_defined(macro_name, file_path,
+                                         int(start_line), int(start_col),
+                                         int(end_line), int(end_col),
+                                         definition.strip() if definition else None,
+                                         False, vals),
+                          vals)
+
+        # ---------------- [DEFINED_FUNC] (active) ----------------
+        elif line.startswith("[DEFINED_FUNC]") and not line.startswith("[DEFINED_FUNC (skipped)]"):
+            match = re.match(r'\[DEFINED_FUNC\] (.+?):(\d+):(\d+):(\d+):(\d+) - (.+?)(?:\s*->\s*(.+))?$', line)
+            if match:
+                file_path, start_line, start_col, end_line, end_col, macro_sig, definition = match.groups()
+                file_path = get_abs_path(file_path)
+                file_path = put_in_target_dir(file_path, target_dir)
+
+                # Macro name is everything up to the opening parenthesis
+                macro_name = macro_sig.split('(')[0].strip()
+
+                entry_key = f"DEFINED_FUNC:{file_path}:{start_line}:{start_col}:{macro_sig}{identifier}:active"
+                macro_key = f"{macro_name}:{file_path}:{start_line}:{start_col}"
+
+                entry = {
+                    "kind": "macro_function",
+                    "type": "DEFINED_FUNC",
+                    "name": macro_name,
+                    "macro_key": macro_key,
+                    "file_path": file_path,
+                    "start_line": int(start_line),
+                    "start_column": int(start_col),
+                    "end_line": int(end_line),
+                    "end_column": int(end_col),
+                    "block_start": int(start_line),
+                    "block_end": int(end_line),
+                    ELEMENT_KEY1: [VAL1],
+                    ELEMENT_KEY2: [VAL2],
+                    ELEMENT_KEY3: [VAL3],
+                    "macro_signature": macro_sig,
+                    "active": True,
+                    "skipped": False
+                }
+                if definition:
+                    entry["definition_body"] = definition.strip()
+
+                put_entry("defined", file_path, entry_key, entry, False, vals)
+                put_macro(macro_key, None, False,
+                          mk_rec_defined(macro_name, file_path,
+                                         int(start_line), int(start_col),
+                                         int(end_line), int(end_col),
+                                         definition.strip() if definition else None,
+                                         True, vals, sig=macro_sig),
+                          vals)
+
+        # ---------------- [DEFINED_FUNC (skipped)] (inactive) ----------------
+        elif line.startswith("[DEFINED_FUNC (skipped)]"):
+            match = re.match(r'\[DEFINED_FUNC \(skipped\)\] (.+?):(\d+):(\d+):(\d+):(\d+) - (.+?)(?:\s*->\s*(.+))?$', line)
+            if match:
+                file_path, start_line, start_col, end_line, end_col, macro_sig, definition = match.groups()
+                file_path = get_abs_path(file_path)
+                file_path = put_in_target_dir(file_path, target_dir)
+
+                macro_name = macro_sig.split('(')[0].strip()
+
+                entry_key = f"DEFINED_FUNC:{file_path}:{start_line}:{start_col}:{macro_sig}{identifier}:skipped"
+                macro_key = f"{macro_name}:{file_path}:{start_line}:{start_col}"
+
+                entry = {
+                    "kind": "macro_function",
+                    "type": "DEFINED_FUNC",
+                    "name": macro_name,
+                    "macro_key": macro_key,
+                    "file_path": file_path,
+                    "start_line": int(start_line),
+                    "start_column": int(start_col),
+                    "end_line": int(end_line),
+                    "end_column": int(end_col),
+                    "block_start": int(start_line),
+                    "block_end": int(end_line),
+                    ELEMENT_KEY1: [VAL1],
+                    ELEMENT_KEY2: [VAL2],
+                    ELEMENT_KEY3: [VAL3],
+                    "macro_signature": macro_sig,
+                    "active": False,
+                    "skipped": True
+                }
+                if definition:
+                    entry["definition_body"] = definition.strip()
+
+                put_entry("defined", file_path, entry_key, entry, True, vals)
+                put_macro(macro_key, None, True,
+                          mk_rec_defined(macro_name, file_path,
+                                         int(start_line), int(start_col),
+                                         int(end_line), int(end_col),
+                                         definition.strip() if definition else None,
+                                         False, vals, sig=macro_sig),
+                          vals)
+
+        # ---------------- [IFDEF] (active) ----------------
+        elif re.match(r'\[IFDEF(?:_TRUE|_FALSE|_FUNC_TRUE|_FUNC_FALSE)?\]', line) and not line.startswith("[IFDEF (skipped)]"):
+            match = re.match(r'\[IFDEF(?:_(TRUE|FALSE|FUNC_TRUE|FUNC_FALSE))?\] (.+?):(\d+):(\d+):(\d+):(\d+) - (.+?) \(defined at: (.+?)\)', line)
+            if match:
+                eval_value, file_path, start_line, start_col, end_line, end_col, macro_name, def_loc = match.groups()
+                evaluated = (eval_value in ["TRUE", "FUNC_TRUE"])
+
+                file_path = get_abs_path(file_path)
+                file_path = put_in_target_dir(file_path, target_dir)
+
+                entry_key = f"IFDEF:{file_path}:{start_line}:{start_col}:{macro_name}:{def_loc}{identifier}:active"
+                macro_key = f"{macro_name}:{def_loc}"
+
+                entry = {
+                    "kind": "directive",
+                    "type": "IFDEF",
+                    "name": macro_name,
+                    "definition": def_loc,  # defined_at
+                    "macro_key": macro_key,
+                    "file_path": file_path,
+                    "start_line": int(start_line),
+                    "start_column": int(start_col),
+                    "end_line": int(end_line),
+                    "end_column": int(end_col),
+                    "block_start": int(start_line),
+                    "block_end": int(end_line),
+                    ELEMENT_KEY1: [VAL1],
+                    ELEMENT_KEY2: [VAL2],
+                    ELEMENT_KEY3: [VAL3],
+                    "active": True,
+                    "skipped": False,
+                    "evaluated": evaluated
+                }
+
+                put_entry("ifdef", file_path, entry_key, entry, False, vals)
+
+                use_entry = {
+                    "kind": "directive",
+                    "type": "IFDEF",
+                    "file_path": file_path,
+                    "start_line": int(start_line),
+                    "start_column": int(start_col),
+                    "end_line": int(end_line),
+                    "end_column": int(end_col),
+                    "macro_key": macro_key,
+                    ELEMENT_KEY1: [VAL1],
+                    ELEMENT_KEY2: [VAL2],
+                    ELEMENT_KEY3: [VAL3],
+                    "active": True,
+                    "skipped": False
+                }
+
+                put_macro(macro_key, use_entry, False,
+                          mk_rec_defloc(macro_name, def_loc, vals), vals)
+
+        # ---------------- [IFDEF (skipped)] (inactive) ----------------
+        elif line.startswith("[IFDEF (skipped)]"):
+            match = re.match(r'\[IFDEF \(skipped\)\] (.+?):(\d+):(\d+):(\d+):(\d+) - (.+?) \(defined at: (.+?)\)', line)
+            if match:
+                file_path, start_line, start_col, end_line, end_col, macro_name, def_loc = match.groups()
+                file_path = get_abs_path(file_path)
+                file_path = put_in_target_dir(file_path, target_dir)
+
+                entry_key = f"IFDEF:{file_path}:{start_line}:{start_col}:{macro_name}:{def_loc}{identifier}:skipped"
+                macro_key = f"{macro_name}:{def_loc}"
+
+                entry = {
+                    "kind": "directive",
+                    "type": "IFDEF",
+                    "name": macro_name,
+                    "definition": def_loc,  # defined_at
+                    "macro_key": macro_key,
+                    "file_path": file_path,
+                    "start_line": int(start_line),
+                    "start_column": int(start_col),
+                    "end_line": int(end_line),
+                    "end_column": int(end_col),
+                    "block_start": int(start_line),
+                    "block_end": int(end_line),
+                    ELEMENT_KEY1: [VAL1],
+                    ELEMENT_KEY2: [VAL2],
+                    ELEMENT_KEY3: [VAL3],
+                    "active": False,
+                    "skipped": True,
+                    "evaluated": False
+                }
+
+                put_entry("ifdef", file_path, entry_key, entry, True, vals)
+
+                use_entry = {
+                    "kind": "directive",
+                    "type": "IFDEF",
+                    "file_path": file_path,
+                    "start_line": int(start_line),
+                    "start_column": int(start_col),
+                    "end_line": int(end_line),
+                    "end_column": int(end_col),
+                    "macro_key": macro_key,
+                    ELEMENT_KEY1: [VAL1],
+                    ELEMENT_KEY2: [VAL2],
+                    ELEMENT_KEY3: [VAL3],
+                    "active": False,
+                    "skipped": True
+                }
+
+                put_macro(macro_key, use_entry, True,
+                          mk_rec_defloc(macro_name, def_loc, vals), vals)
+
+        # ---------------- [IFNDEF] (active) ----------------
+        elif re.match(r'\[IFNDEF(?:_TRUE|_FALSE)?\]', line) and not line.startswith("[IFNDEF (skipped)]"):
+            match = re.match(r'\[IFNDEF(?:_(TRUE|FALSE))?\] (.+?):(\d+):(\d+):(\d+):(\d+) - (.+?) \(defined at: (.+?)\)', line)
+            if match:
+                eval_value, file_path, start_line, start_col, end_line, end_col, macro_name, def_loc = match.groups()
+                evaluated = (eval_value == "TRUE")
+
+                file_path = get_abs_path(file_path)
+                file_path = put_in_target_dir(file_path, target_dir)
+
+                entry_key = f"IFNDEF:{file_path}:{start_line}:{start_col}:{macro_name}:{def_loc}{identifier}:active"
+                macro_key = f"{macro_name}:{def_loc}"
+
+                entry = {
+                    "kind": "directive",
+                    "type": "IFNDEF",
+                    "name": macro_name,
+                    "definition": def_loc,  # defined_at
+                    "macro_key": macro_key,
+                    "file_path": file_path,
+                    "start_line": int(start_line),
+                    "start_column": int(start_col),
+                    "end_line": int(end_line),
+                    "end_column": int(end_col),
+                    "block_start": int(start_line),
+                    "block_end": int(end_line),
+                    ELEMENT_KEY1: [VAL1],
+                    ELEMENT_KEY2: [VAL2],
+                    ELEMENT_KEY3: [VAL3],
+                    "active": True,
+                    "skipped": False,
+                    "evaluated": evaluated
+                }
+
+                put_entry("ifndef", file_path, entry_key, entry, False, vals)
+
+                use_entry = {
+                    "kind": "directive",
+                    "type": "IFNDEF",
+                    "file_path": file_path,
+                    "start_line": int(start_line),
+                    "start_column": int(start_col),
+                    "end_line": int(end_line),
+                    "end_column": int(end_col),
+                    "macro_key": macro_key,
+                    ELEMENT_KEY1: [VAL1],
+                    ELEMENT_KEY2: [VAL2],
+                    ELEMENT_KEY3: [VAL3],
+                    "active": True,
+                    "skipped": False
+                }
+
+                put_macro(macro_key, use_entry, False,
+                          mk_rec_defloc(macro_name, def_loc, vals), vals)
+
+        # ---------------- [IFNDEF (skipped)] (inactive) ----------------
+        elif line.startswith("[IFNDEF (skipped)]"):
+            match = re.match(r'\[IFNDEF \(skipped\)\] (.+?):(\d+):(\d+):(\d+):(\d+) - (.+?) \(defined at: (.+?)\)', line)
+            if match:
+                file_path, start_line, start_col, end_line, end_col, macro_name, def_loc = match.groups()
+                file_path = get_abs_path(file_path)
+                file_path = put_in_target_dir(file_path, target_dir)
+
+                entry_key = f"IFNDEF:{file_path}:{start_line}:{start_col}:{macro_name}:{def_loc}{identifier}:skipped"
+                macro_key = f"{macro_name}:{def_loc}"
+
+                entry = {
+                    "kind": "directive",
+                    "type": "IFNDEF",
+                    "name": macro_name,
+                    "definition": def_loc,  # defined_at
+                    "macro_key": macro_key,
+                    "file_path": file_path,
+                    "start_line": int(start_line),
+                    "start_column": int(start_col),
+                    "end_line": int(end_line),
+                    "end_column": int(end_col),
+                    "block_start": int(start_line),
+                    "block_end": int(end_line),
+                    ELEMENT_KEY1: [VAL1],
+                    ELEMENT_KEY2: [VAL2],
+                    ELEMENT_KEY3: [VAL3],
+                    "active": False,
+                    "skipped": True,
+                    "evaluated": False
+                }
+
+                put_entry("ifndef", file_path, entry_key, entry, True, vals)
+
+                use_entry = {
+                    "kind": "directive",
+                    "type": "IFNDEF",
+                    "file_path": file_path,
+                    "start_line": int(start_line),
+                    "start_column": int(start_col),
+                    "end_line": int(end_line),
+                    "end_column": int(end_col),
+                    "macro_key": macro_key,
+                    ELEMENT_KEY1: [VAL1],
+                    ELEMENT_KEY2: [VAL2],
+                    ELEMENT_KEY3: [VAL3],
+                    "active": False,
+                    "skipped": True
+                }
+
+                put_macro(macro_key, use_entry, True,
+                          mk_rec_defloc(macro_name, def_loc, vals), vals)
+
+        # ---------------- [IF] (active) ----------------
+        elif re.match(r'\[IF(?:_TRUE|_FALSE)?\]', line) and not line.startswith("[IF (skipped)]"):
+            match = re.match(r'\[IF(?:_(TRUE|FALSE))?\] (.+?):(\d+):(\d+):(\d+):(\d+) - (.+?)(?:\s+\[(.+?)\]\s*)?$', line)
+            if match:
+                eval_value, file_path, start_line, start_col, end_line, end_col, condition, macros_str = match.groups()
+                evaluated = (eval_value == "TRUE")
+
+                file_path = get_abs_path(file_path)
+                file_path = put_in_target_dir(file_path, target_dir)
+
+                condition = ' '.join(condition.split())
+
+                macros_key = macros_str if macros_str else ""
+                entry_key = f"IF:{file_path}:{start_line}:{start_col}:{condition}:{macros_key}{identifier}:active"
+
+                macros_info = []
+                if macros_str:
+                    for macro_part in macros_str.split(';'):
+                        macro_match = re.match(r'(.+?)\s+defined at:\s+(.+)', macro_part.strip())
+                        if macro_match:
+                            m_name, m_def_loc = macro_match.groups()
+                            macros_info.append({
+                                "name": m_name.strip(),
+                                "definition": m_def_loc.strip(),  # defined_at
+                                "macro_key": f"{m_name.strip()}:{m_def_loc.strip()}",
+                            })
+
+                entry = {
+                    "kind": "directive",
+                    "type": "IF",
+                    "file_path": file_path,
+                    "start_line": int(start_line),
+                    "start_column": int(start_col),
+                    "end_line": int(end_line),
+                    "end_column": int(end_col),
+                    "block_start": int(start_line),
+                    "block_end": int(end_line),
+                    ELEMENT_KEY1: [VAL1],
+                    ELEMENT_KEY2: [VAL2],
+                    ELEMENT_KEY3: [VAL3],
+                    "condition": condition,
+                    "macros": macros_info,
+                    "active": True,
+                    "skipped": False,
+                    "evaluated": evaluated
+                }
+
+                put_entry("if", file_path, entry_key, entry, False, vals)
+
+                for macro_info in macros_info:
+                    m_name = macro_info["name"]
+                    m_def = macro_info["definition"]
+                    m_key = macro_info["macro_key"]
+
+                    use_entry = {
+                        "kind": "directive",
+                        "type": "IF",
+                        "file_path": file_path,
+                        "start_line": int(start_line),
+                        "start_column": int(start_col),
+                        "end_line": int(end_line),
+                        "end_column": int(end_col),
+                        "condition": condition,
+                        "macro_key": m_key,
+                        ELEMENT_KEY1: [VAL1],
+                        ELEMENT_KEY2: [VAL2],
+                        ELEMENT_KEY3: [VAL3],
+                        "active": True,
+                        "skipped": False
+                    }
+
+                    # Must go through the factory: an inline lambda would bind the
+                    # loop variables late and write the last values everywhere.
+                    put_macro(m_key, use_entry, False,
+                              mk_rec_defloc(m_name, m_def, vals), vals)
+
+                # Overwritten wholesale by the matching "=> Closes" line below.
+                key = f"IF:{file_path}:{start_line}:{start_col}"
+                if key not in endif_mapping:
+                    endif_mapping[key] = {}
+                endif_mapping[key]["file_entry"] = entry
+                endif_mapping[key]["macros"] = macros_info
+
+        # ---------------- [IF (skipped)] (inactive) ----------------
+        elif line.startswith("[IF (skipped)]"):
+            match = re.match(r'\[IF \(skipped\)\] (.+?):(\d+):(\d+):(\d+):(\d+) - (.+?)(?:\s+\[(.+?)\]\s*)?$', line)
+            if match:
+                file_path, start_line, start_col, end_line, end_col, condition, macros_str = match.groups()
+                file_path = get_abs_path(file_path)
+                file_path = put_in_target_dir(file_path, target_dir)
+
+                condition = ' '.join(condition.split())
+
+                macros_key = macros_str if macros_str else ""
+                entry_key = f"IF:{file_path}:{start_line}:{start_col}:{condition}:{macros_key}{identifier}:skipped"
+
+                macros_info = []
+                if macros_str:
+                    for macro_part in macros_str.split(';'):
+                        macro_match = re.match(r'(.+?)\s+defined at:\s+(.+)', macro_part.strip())
+                        if macro_match:
+                            m_name, m_def_loc = macro_match.groups()
+                            macros_info.append({
+                                "name": m_name.strip(),
+                                "definition": m_def_loc.strip(),  # defined_at
+                                "macro_key": f"{m_name.strip()}:{m_def_loc.strip()}",
+                            })
+
+                entry = {
+                    "kind": "directive",
+                    "type": "IF",
+                    "file_path": file_path,
+                    "start_line": int(start_line),
+                    "start_column": int(start_col),
+                    "end_line": int(end_line),
+                    "end_column": int(end_col),
+                    "block_start": int(start_line),
+                    "block_end": int(end_line),
+                    ELEMENT_KEY1: [VAL1],
+                    ELEMENT_KEY2: [VAL2],
+                    ELEMENT_KEY3: [VAL3],
+                    "condition": condition,
+                    "macros": macros_info,
+                    "active": False,
+                    "skipped": True,
+                    "evaluated": False
+                }
+
+                put_entry("if", file_path, entry_key, entry, True, vals)
+
+                for macro_info in macros_info:
+                    m_name = macro_info["name"]
+                    m_def = macro_info["definition"]
+                    m_key = macro_info["macro_key"]
+
+                    use_entry = {
+                        "kind": "directive",
+                        "type": "IF",
+                        "file_path": file_path,
+                        "start_line": int(start_line),
+                        "start_column": int(start_col),
+                        "end_line": int(end_line),
+                        "end_column": int(end_col),
+                        "condition": condition,
+                        "macro_key": m_key,
+                        ELEMENT_KEY1: [VAL1],
+                        ELEMENT_KEY2: [VAL2],
+                        ELEMENT_KEY3: [VAL3],
+                        "active": False,
+                        "skipped": True
+                    }
+
+                    put_macro(m_key, use_entry, True,
+                              mk_rec_defloc(m_name, m_def, vals), vals)
+
+                key = f"IF:{file_path}:{start_line}:{start_col}"
+
+        # ---------------- [ELIF] (active) ----------------
+        elif re.match(r'\[ELIF(?:_TRUE|_FALSE|_NOT_EVALUATED)?\]', line) and not line.startswith("[ELIF (skipped)]"):
+            match = re.match(r'\[ELIF(?:_(TRUE|FALSE|NOT_EVALUATED))?\] (.+?):(\d+):(\d+):(\d+):(\d+) - (.+?)(?:\s+\[(.+?)\]\s*)?$', line)
+            if match:
+                eval_value, file_path, start_line, start_col, end_line, end_col, condition, macros_str = match.groups()
+                evaluated = (eval_value == "TRUE")
+
+                file_path = get_abs_path(file_path)
+                file_path = put_in_target_dir(file_path, target_dir)
+
+                condition = ' '.join(condition.split())
+
+                macros_key = macros_str if macros_str else ""
+                entry_key = f"ELIF:{file_path}:{start_line}:{start_col}:{condition}:{macros_key}{identifier}:active"
+
+                macros_info = []
+                if macros_str:
+                    for macro_part in macros_str.split(';'):
+                        macro_match = re.match(r'(.+?)\s+defined at:\s+(.+)', macro_part.strip())
+                        if macro_match:
+                            m_name, m_def_loc = macro_match.groups()
+                            macros_info.append({
+                                "name": m_name.strip(),
+                                "definition": m_def_loc.strip(),  # defined_at
+                                "macro_key": f"{m_name.strip()}:{m_def_loc.strip()}"
+                            })
+
+                entry = {
+                    "kind": "directive",
+                    "type": "ELIF",
+                    "file_path": file_path,
+                    "start_line": int(start_line),
+                    "start_column": int(start_col),
+                    "end_line": int(end_line),
+                    "end_column": int(end_col),
+                    "block_start": int(start_line),
+                    "block_end": int(end_line),
+                    ELEMENT_KEY1: [VAL1],
+                    ELEMENT_KEY2: [VAL2],
+                    ELEMENT_KEY3: [VAL3],
+                    "condition": condition,
+                    "macros": macros_info,
+                    "active": True,
+                    "skipped": False,
+                    "evaluated": evaluated
+                }
+
+                put_entry("elif", file_path, entry_key, entry, False, vals)
+
+                for macro_info in macros_info:
+                    m_name = macro_info["name"]
+                    m_def = macro_info["definition"]
+                    m_key = macro_info["macro_key"]
+
+                    use_entry = {
+                        "kind": "directive",
+                        "type": "ELIF",
+                        "file_path": file_path,
+                        "start_line": int(start_line),
+                        "start_column": int(start_col),
+                        "end_line": int(end_line),
+                        "end_column": int(end_col),
+                        "condition": condition,
+                        "macro_key": m_key,
+                        ELEMENT_KEY1: [VAL1],
+                        ELEMENT_KEY2: [VAL2],
+                        ELEMENT_KEY3: [VAL3],
+                        "active": True,
+                        "skipped": False
+                    }
+
+                    put_macro(m_key, use_entry, False,
+                              mk_rec_defloc(m_name, m_def, vals), vals)
+
+        # ---------------- [ELIF (skipped)] (inactive) ----------------
+        elif line.startswith("[ELIF (skipped)]"):
+            match = re.match(r'\[ELIF \(skipped\)\] (.+?):(\d+):(\d+):(\d+):(\d+) - (.+?)(?:\s+\[(.+?)\]\s*)?$', line)
+            if match:
+                file_path, start_line, start_col, end_line, end_col, condition, macros_str = match.groups()
+                file_path = get_abs_path(file_path)
+                file_path = put_in_target_dir(file_path, target_dir)
+
+                condition = ' '.join(condition.split())
+
+                macros_key = macros_str if macros_str else ""
+                entry_key = f"ELIF:{file_path}:{start_line}:{start_col}:{condition}:{macros_key}{identifier}:skipped"
+
+                macros_info = []
+                if macros_str:
+                    for macro_part in macros_str.split(';'):
+                        macro_match = re.match(r'(.+?)\s+defined at:\s+(.+)', macro_part.strip())
+                        if macro_match:
+                            m_name, m_def_loc = macro_match.groups()
+                            macros_info.append({
+                                "name": m_name.strip(),
+                                "definition": m_def_loc.strip(),  # defined_at
+                                "macro_key": f"{m_name.strip()}:{m_def_loc.strip()}"
+                            })
+
+                entry = {
+                    "kind": "directive",
+                    "type": "ELIF",
+                    "file_path": file_path,
+                    "start_line": int(start_line),
+                    "start_column": int(start_col),
+                    "end_line": int(end_line),
+                    "end_column": int(end_col),
+                    "block_start": int(start_line),
+                    "block_end": int(end_line),
+                    ELEMENT_KEY1: [VAL1],
+                    ELEMENT_KEY2: [VAL2],
+                    ELEMENT_KEY3: [VAL3],
+                    "condition": condition,
+                    "macros": macros_info,
+                    "active": False,
+                    "skipped": True,
+                    "evaluated": False
+                }
+
+                put_entry("elif", file_path, entry_key, entry, True, vals)
+
+                for macro_info in macros_info:
+                    m_name = macro_info["name"]
+                    m_def = macro_info["definition"]
+                    m_key = macro_info["macro_key"]
+
+                    use_entry = {
+                        "kind": "directive",
+                        "type": "ELIF",
+                        "file_path": file_path,
+                        "start_line": int(start_line),
+                        "start_column": int(start_col),
+                        "end_line": int(end_line),
+                        "end_column": int(end_col),
+                        "condition": condition,
+                        "macro_key": m_key,
+                        ELEMENT_KEY1: [VAL1],
+                        ELEMENT_KEY2: [VAL2],
+                        ELEMENT_KEY3: [VAL3],
+                        "active": False,
+                        "skipped": True
+                    }
+
+                    put_macro(m_key, use_entry, True,
+                              mk_rec_defloc(m_name, m_def, vals), vals)
+
+        # ---------------- [ELSE_TRUE] (active) ----------------
+        elif line.startswith("[ELSE_TRUE]"):
+            match = re.match(r'\[ELSE_TRUE\] (.+?):(\d+):(\d+):(\d+):(\d+)', line)
+            if match:
+                file_path, start_line, start_col, end_line, end_col = match.groups()
+                file_path = get_abs_path(file_path)
+                file_path = put_in_target_dir(file_path, target_dir)
+
+                entry_key = f"ELSE:{file_path}:{start_line}:{start_col}{identifier}:active"
+
+                entry = {
+                    "kind": "directive",
+                    "type": "ELSE",
+                    "file_path": file_path,
+                    "start_line": int(start_line),
+                    "start_column": int(start_col),
+                    "end_line": int(end_line),
+                    "end_column": int(end_col),
+                    "block_start": int(start_line),
+                    "block_end": int(end_line),
+                    ELEMENT_KEY1: [VAL1],
+                    ELEMENT_KEY2: [VAL2],
+                    ELEMENT_KEY3: [VAL3],
+                    "active": True,
+                    "skipped": False,
+                    "evaluated": True
+                }
+
+                # _empty() always provides the "else" bucket, so the defensive
+                # "else not in ..." checks are no longer needed.
+                put_entry("else", file_path, entry_key, entry, False, vals)
+
+        # ---------------- [ELSE_FALSE] (skipped) ----------------
+        elif line.startswith("[ELSE_FALSE]"):
+            match = re.match(r'\[ELSE_FALSE\] (.+?):(\d+):(\d+):(\d+):(\d+)', line)
+            if match:
+                file_path, start_line, start_col, end_line, end_col = match.groups()
+                file_path = get_abs_path(file_path)
+                file_path = put_in_target_dir(file_path, target_dir)
+
+                entry_key = f"ELSE:{file_path}:{start_line}:{start_col}{identifier}:skipped"
+
+                entry = {
+                    "kind": "directive",
+                    "type": "ELSE",
+                    "file_path": file_path,
+                    "start_line": int(start_line),
+                    "start_column": int(start_col),
+                    "end_line": int(end_line),
+                    "end_column": int(end_col),
+                    "block_start": int(start_line),
+                    "block_end": int(end_line),
+                    ELEMENT_KEY1: [VAL1],
+                    ELEMENT_KEY2: [VAL2],
+                    ELEMENT_KEY3: [VAL3],
+                    "active": False,
+                    "skipped": True,
+                    "evaluated": False
+                }
+
+                put_entry("else", file_path, entry_key, entry, True, vals)
+
+        # ---------------- [ENDIF] (active & skipped) ----------------
+        elif line.startswith("[ENDIF]"):
+            is_skipped = "(skipped)" in line
+
+            match = re.match(r'\[ENDIF(?: \(skipped\))?\] (.+?):(\d+):(\d+):(\d+):(\d+)', line)
+            if match:
+                endif_file, start_line, start_col, end_line, end_col = match.groups()
+                endif_file = get_abs_path(endif_file)
+
+                status = "skipped" if is_skipped else "active"
+                entry_key = f"ENDIF:{endif_file}:{start_line}:{start_col}{identifier}:{status}"
+
+                entry = {
+                    "kind": "directive",
+                    "type": "ENDIF",
+                    "file_path": endif_file,
+                    "start_line": int(start_line),
+                    "start_column": int(start_col),
+                    "end_line": int(end_line),
+                    "end_column": int(end_col),
+                    "block_start": int(start_line),
+                    "block_end": int(end_line),
+                    ELEMENT_KEY1: [VAL1],
+                    ELEMENT_KEY2: [VAL2],
+                    ELEMENT_KEY3: [VAL3],
+                    "closes": None,
+                    "active": not is_skipped,
+                    "skipped": is_skipped
+                }
+
+                # Keyed by endif_file, which is NOT passed through
+                # put_in_target_dir here - same as the original code.
+                put_entry("endif", endif_file, entry_key, entry, is_skipped, vals)
+
+                pending_endif = entry
+
+        # ---------------- "=> Closes [IF/IFDEF/IFNDEF]" ----------------
+        elif line.startswith("=> Closes"):
+            match = re.match(r'=> Closes \[(\w+(?:_TRUE|_FALSE|_FUNC_TRUE|_FUNC_FALSE|_NOT_EVALUATED)?(?:\s+\(skipped\))?)\] at (.+?):(\d+):(\d+):(\d+):(\d+)(?:\s*\(\s*(.+?)\s*\))?$', line)
+
+            if match:
+                if_type, if_file, start_line, start_col, end_line, end_col, if_info = match.groups()
+                if_file = get_abs_path(if_file)
+
+                is_skipped = "(skipped)" in if_type
+                if_type = re.sub(r'_(TRUE|FALSE|FUNC_TRUE|FUNC_FALSE|NOT_EVALUATED)', '', if_type)
+                if_type = if_type.replace(" (skipped)", "")
+
+                if if_info:
+                    if_info = ' '.join(if_info.split())
+
+                lookup_key = f"{if_type}:{if_file}:{start_line}:{start_col}"
+
+                endif_file, e_start_line, e_start_col, e_end_line, e_end_col, is_endif_skipped = \
+                    get_endif_info(processed_lines, idx, line)
+
+                endif_mapping[lookup_key] = {
+                    "kind": "directive",
+                    "type": if_type,
+                    "def_file_path": if_file,
+                    "def_start_line": int(start_line),
+                    "def_start_column": int(start_col),
+                    "def_end_line": int(end_line),
+                    "def_end_column": int(end_col),
+                    "file_path": endif_file,
+                    "start_line": int(e_start_line),
+                    "start_column": int(e_start_col),
+                    "end_line": int(e_end_line),
+                    "end_column": int(e_end_col),
+                    ELEMENT_KEY1: [VAL1],
+                    ELEMENT_KEY2: [VAL2],
+                    ELEMENT_KEY3: [VAL3],
+                    "skipped": is_endif_skipped
+                }
+                pending_endif = None
+
+    # deallocate processed_lines
+    del processed_lines
+    gc.collect()
+
+    del seen_map
+    gc.collect()
+
+    # ------------------------------------------------------------------
+    # post-processing
+    # ------------------------------------------------------------------
+
+    write_json(f"{database_dir}/endif_mapping.json", endif_mapping)
+
+    # Invert endif_mapping instead of indexing every entry and every use.
+    # This dict is sized by the number of endifs, not by the number of entries.
+    endif_by_pos = {
+        (d["type"], d["def_file_path"], d["def_start_line"], d["def_start_column"]): {
+            "file_path":    d["file_path"],
+            "start_line":   d["start_line"],
+            "start_column": d["start_column"],
+            "end_line":     d["end_line"],
+            "end_column":   d["end_column"],
+        }
+        for d in endif_mapping.values()
+        if "def_file_path" in d
+    }
+
+    # Only the all-set is walked; the taken side shares the same objects.
+    updated_count = 0
+    for file_path, file_data in data["files"].items():
+        for directive_type in ["ifdef", "ifndef", "if", "elif", "else"]:
+            for entry in file_data.get(directive_type, []):
+                info = endif_by_pos.get((directive_type.upper(), file_path,
+                                         entry["start_line"], entry["start_column"]))
+                if info is not None:
+                    entry["endif"] = info
+                    updated_count += 1
+
+    for macro_data in data["macros"].values():
+        for use in macro_data.get(search_key, []):
+            info = endif_by_pos.get((use["type"], use["file_path"],
+                                     use["start_line"], use["start_column"]))
+            if info is not None:
+                use["endif"] = info
+
+    print(f"✅ Updated {updated_count} entries with endif information")
+
+    del endif_by_pos, endif_mapping
+    gc.collect()
+
+    # The former loop over data["macros"] was a no-op: those records only hold
+    # name/definition/appearances, so get('ifdef') etc. always returned [].
+    for file_path, file_data in data["files"].items():
+        for directive_type in ['ifdef', 'ifndef', 'if', 'elif', 'else']:
+            for item in file_data.get(directive_type, []):
+                if 'endif' not in item:
+                    continue
+                item['block_end'] = item['endif'].get('start_line')
+
+    # ------------------------------------------------------------------
+    # write
+    # ------------------------------------------------------------------
+
+    total_files = len(data["files"])
+
+    for path, obj in ((all_unordered_path,   data["files"]),
+                      (taken_unordered_path, taken["files"])):
+        with open(path, 'w', encoding='utf-8') as f:
+            json.dump(obj, f, separators=(',', ':'), ensure_ascii=False)
+        print(f"Saved macro information to: {path}")
+
+    # taken["files"] references the same entry objects, so drop both only
+    # after the two files have been written.
+    del data["files"], taken["files"]
+    gc.collect()
+
+    for path, obj in ((all_macros_path,   data["macros"]),
+                      (taken_macros_path, taken["macros"])):
+        with open(path, 'w', encoding='utf-8') as f:
+            json.dump(obj, f, separators=(',', ':'), ensure_ascii=False)
+        print(f"Saved macro information to: {path}")
+
+    print(f"\nStatistics:")
+    print(f"  Total files: {total_files}")
+
+    return data
+
+
+    
+def save_all_directives_original(input_file, unordered_macros_path, macros_path, database_dir, target_dir, skipped_flag, evaluated_flag):
     """Parse macro-finder output and save to JSON (complete version based on Close information)"""
     
     print(f"Starting save_all_directives (skipped_flag: {skipped_flag})...")
@@ -8022,10 +9155,18 @@ def parse_all(round_id, target, target_dir, meta_dir, div_meta_dir, database_dir
 
         # ---- Step 3: save_all_directives x2 in parallel ----
         # All directive macros (both inactive and active)
+        save_all_directives(
+            output_file,
+            all_directive_path, ordered_all_directive_path,
+            unordered_taken_directive_path, taken_directive_path,
+            database_dir, target_dir
+        )
+
+        """
+        # All directive macros
         fut_all = pool.submit(save_all_directives, output_file, all_directive_path, ordered_all_directive_path, database_dir, target_dir, False, False)
-        
-        # Active directive macros
         fut_taken = pool.submit(save_all_directives, output_file, unordered_taken_directive_path, taken_directive_path, database_dir, target_dir, True, False)
+        """
 
         fut_taken.result()
         fut_all.result()
