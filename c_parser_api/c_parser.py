@@ -7905,7 +7905,7 @@ def parse_all(round_id, target, target_dir, meta_dir, div_meta_dir, database_dir
             Path(stash_path).unlink()
 
 
-    else: # round_id != "1":
+    elif  round_id != "call": # else: # round_id != "1":
         compile_dir, compile_json_path = get_compile_json(target_dir)
 
         # # Stash the compile_commands.json before modifying sources.
