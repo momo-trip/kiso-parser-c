@@ -1069,7 +1069,7 @@ def build_graph(callee_path):
 
 
 
-def build_relationship(function_metadata):
+def build_relationship(function_metadata, is_program_path):
     """
     Build a call graph with caller and callee information from function metadata.
     Uses a composite key of function name, file path, and start line to handle
@@ -1085,6 +1085,8 @@ def build_relationship(function_metadata):
     func_id_to_info = {} 
     name_to_ids = {} 
     
+    program_files = set(read_json(is_program_path))
+
     for key, item in function_metadata.items():
         func_name = item['name']
         file_path, start_line, _ = parse_def_loc(item['definition'])
@@ -1131,6 +1133,9 @@ def build_relationship(function_metadata):
                 # callee_line = call_site['start_line']
                 callee_file, callee_line, _ = parse_def_loc(call_site['definition'])
                 callee_id = f"{callee_name}@{callee_file}:{callee_line}"
+
+                if is_system_file(callee_file, program_files):
+                    continue
 
                 # call_file = call_site['call_file_path']
                 # call_line = call_site['call_start_line']
@@ -1295,7 +1300,7 @@ def analyze_call_relationship(meta_dir, callee_path, target_dir, is_program_path
     # print(f"Loaded function metadata: {len(function_metadata)} entries")
     
     # 2. Build call graph
-    call_graph = build_relationship(function_metadata)
+    call_graph = build_relationship(function_metadata, is_program_path)
     print(f"Built call graph: {len(call_graph)} functions")
     
 
