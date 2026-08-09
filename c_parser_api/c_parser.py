@@ -1100,6 +1100,7 @@ def build_relationship(function_metadata, is_program_path):
         func_info = {
             'id': func_id,
             'name': func_name,
+            'kind': item.get('kind'),
             'signature': signature, #item['signature'], #, ''),
             'file_path': file_path,
             #'is_static': item['is_static'], #, False),
@@ -1146,6 +1147,7 @@ def build_relationship(function_metadata, is_program_path):
                     functions[callee_id] = {
                         'id': callee_id,
                         'name': callee_name,
+                        'kind': call_site.get('kind'),
                         'signature': '',
                         'file_path': callee_file,
                         'is_static': False,
